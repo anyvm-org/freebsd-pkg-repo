@@ -1,0 +1,5 @@
+# slug                freebsd_version   poudriere_arch   jail
+# The freebsd_version here pins the riscv64 TARGET jail, which needs a
+# concrete base.txz URL. The amd64 build host is selected separately in
+# build.yml with a major-version prefix.
+FreeBSD-15-riscv64    15.1-RELEASE      riscv.riscv64    rv64

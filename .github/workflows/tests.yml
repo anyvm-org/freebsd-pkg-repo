@@ -1,0 +1,40 @@
+name: Tests
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'tests/**'
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Runs BEFORE the tests: unittest writes __pycache__/*.pyc, and a
+      # compiled .pyc trips a naive non-ASCII grep. -I skips binary files
+      # too, so the check stays correct whatever order it runs in.
+      - name: Check every tracked file is 7-bit ASCII
+        run: |
+          set -eu
+          if grep -rnPI --exclude-dir=__pycache__ "[^\x00-\x7F]" \
+              scripts tests config .github README.md; then
+            echo "non-ASCII bytes found above" >&2
+            exit 1
+          fi
+          echo "all files are ASCII"
+
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v

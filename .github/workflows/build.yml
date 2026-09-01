@@ -1,0 +1,96 @@
+name: Build
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      abi_slug:
+        description: 'ABI slug from config/abis'
+        required: false
+        default: 'FreeBSD-15-riscv64'
+      pkglist:
+        description: 'Port list file to build'
+        required: false
+        default: 'config/pkglist'
+      deadline:
+        description: 'poudriere bulk wall-clock budget, seconds'
+        required: false
+        default: '16200'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free up runner disk
+        run: |
+          set -eux
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Read the ABI row
+        id: abi
+        run: |
+          set -eu
+          slug='${{ inputs.abi_slug }}'
+          row=$(grep -v '^#' config/abis | awk -v s="$slug" '$1 == s {print; exit}')
+          if [ -z "$row" ]; then
+            echo "unknown abi slug: $slug" >&2
+            exit 1
+          fi
+          echo "version=$(echo "$row" | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+          echo "arch=$(echo "$row" | awk '{print $3}')" >> "$GITHUB_OUTPUT"
+          echo "jail=$(echo "$row" | awk '{print $4}')" >> "$GITHUB_OUTPUT"
+          echo "resolved: $row"
+
+      - name: Build the slice in a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        env:
+          ABI_SLUG: ${{ inputs.abi_slug }}
+          FBSD_VERSION: ${{ steps.abi.outputs.version }}
+          POUDRIERE_ARCH: ${{ steps.abi.outputs.arch }}
+          JAIL: ${{ steps.abi.outputs.jail }}
+          PKGLIST: ${{ inputs.pkglist }}
+          BUILD_DEADLINE: ${{ inputs.deadline }}
+        with:
+          # Major-version prefix: freebsd-vm resolves it to the newest
+          # matching release ("Only the leading, '.' separated part of it is
+          # enough" -- action.yml). This is the amd64 BUILD host only; the
+          # riscv64 target version is pinned in config/abis, because
+          # poudriere needs a concrete base.txz URL.
+          release: '15'
+          mem: 12288
+          cpu: 4
+          sync: rsync
+          copyback: true
+          envs: 'ABI_SLUG FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE'
+          run: |
+            set -eu
+            cp "${PKGLIST}" ./slice.txt
+            SLICE_FILE="$(pwd)/slice.txt"
+            export SLICE_FILE
+            sh scripts/vm_build.sh
+
+      - name: Show what came back
+        if: always()
+        run: |
+          set -eux
+          ls -la out || true
+          cat out/result.json || true
+          cat out/ports_commit || true
+          cat out/build_seconds || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: build-results-${{ inputs.abi_slug }}
+          path: out
+          if-no-files-found: warn
