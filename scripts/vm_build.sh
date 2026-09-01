@@ -70,8 +70,15 @@ binmiscctl lookup "${TARGET_ARCH}" || {
 # declared hung. Both are pulled inside the job budget here.
 # ---------------------------------------------------------------------
 mkdir -p /usr/local/etc /usr/ports/distfiles
+# NO_SRC=yes drops src.txz from the fetched dist sets (jail.sh:847-850,
+# "if [ -z "${SRCPATH}" -a "${NO_SRC:-no}" = "no" ]"). Measured: 241 MB
+# and 4m35s per jail creation, for a tree that building ports never reads
+# -- native-xtools is already off via "jail -c -X". A full-tree run that
+# wants the handful of kmod ports (which need /usr/src) would set this
+# back to no; none of them are riscv64-relevant.
 cat >> /usr/local/etc/poudriere.conf <<'CONF'
 NO_ZFS=yes
+NO_SRC=yes
 BASEFS=/usr/local/poudriere
 DISTFILES_CACHE=/usr/ports/distfiles
 ALLOW_MAKE_JOBS=yes
@@ -84,21 +91,44 @@ CONF
 # archive.freebsd.org are NOT sync-locked, so probe and fall back rather
 # than hardcoding one host.
 # ---------------------------------------------------------------------
+# "fetch -s" prints the size WITHOUT transferring the body (fetch(1):
+# "-s, --print-size  Print the size in bytes of each requested file,
+# without fetching it."). The obvious "fetch -o /dev/null" would download
+# the whole ~200 MB base.txz just to answer an existence question, twice
+# over if the first mirror misses.
 BASE_URL="https://download.freebsd.org/releases/${TARGET}/${TARGET_ARCH}/${FBSD_VERSION}"
-if ! fetch -qo /dev/null "${BASE_URL}/base.txz"; then
+if ! fetch -qs "${BASE_URL}/base.txz" >/dev/null 2>&1; then
     BASE_URL="https://archive.freebsd.org/old-releases/${TARGET}/${TARGET_ARCH}/${FBSD_VERSION}"
-    fetch -qo /dev/null "${BASE_URL}/base.txz" || {
+    fetch -qs "${BASE_URL}/base.txz" >/dev/null 2>&1 || {
         echo "FATAL: no base.txz for ${FBSD_VERSION} ${TARGET_ARCH}" >&2
         exit 1
     }
 fi
-echo "using base sets from ${BASE_URL}"
+echo "using base sets from ${BASE_URL} ($(fetch -qs "${BASE_URL}/base.txz" 2>/dev/null) bytes)"
 
-if ! poudriere jail -l -j "${JAIL}" >/dev/null 2>&1; then
+# Existence test must compare NAMES, not exit codes: "poudriere jail -l"
+# returns 0 even when no jails directory exists at all (jail.sh:108,
+# "[ -d ${POUDRIERED}/jails ] || return 0"), and -j does not filter the
+# listing. Using the exit code silently skipped jail creation and left
+# bulk to fail with "No such jail". -q drops the header, -n prints only
+# the name.
+if ! poudriere jail -l -q -n 2>/dev/null | grep -qx "${JAIL}"; then
+    echo "creating jail ${JAIL} (${POUDRIERE_ARCH}, ${FBSD_VERSION})"
     # -X: do not build native-xtools; there is no src tree in this VM.
     poudriere jail -c -j "${JAIL}" -v "${FBSD_VERSION}" \
         -a "${POUDRIERE_ARCH}" -m "url=${BASE_URL}" -X
+else
+    echo "jail ${JAIL} already exists"
 fi
+
+# Hard assertion. A setup step that is skipped by accident must not be
+# discoverable only as a confusing failure three steps later.
+poudriere jail -l -q -n 2>/dev/null | grep -qx "${JAIL}" || {
+    echo "FATAL: jail ${JAIL} still does not exist after creation" >&2
+    poudriere jail -l >&2 || true
+    exit 1
+}
+poudriere jail -l -j "${JAIL}"
 
 if ! poudriere ports -l | awk '{print $1}' | grep -qx "${PORTS_TREE}"; then
     poudriere ports -c -p "${PORTS_TREE}" -m git+https
@@ -125,11 +155,25 @@ BUILD_STARTED=$(date +%s)
 set +e
 poudriere bulk -j "${JAIL}" -p "${PORTS_TREE}" -f "${SLICE_FILE}" &
 BULK_PID=$!
-( sleep "${BUILD_DEADLINE}"; kill -TERM "${BULK_PID}" 2>/dev/null ) &
+
+# The watchdog gets its own stdout/stderr. Without this redirection the
+# subshell -- and the sleep inside it -- inherit the script's descriptors,
+# and ssh will not close the session while anything still holds them. That
+# made every CI job run for the FULL deadline no matter how fast the build
+# finished: one run had "vm_build.sh done" at 15:32:37 and the step ending
+# at 20:02:37, exactly BUILD_DEADLINE (16200s) later.
+( sleep "${BUILD_DEADLINE}"; kill -TERM "${BULK_PID}" 2>/dev/null ) \
+    >/dev/null 2>&1 &
 WATCHDOG_PID=$!
+
 wait "${BULK_PID}"
 BULK_RC=$?
+
+# Killing the subshell alone leaves its sleep orphaned and still running.
+# Reap the children first, then the subshell itself.
+pkill -P "${WATCHDOG_PID}" 2>/dev/null
 kill "${WATCHDOG_PID}" 2>/dev/null
+wait "${WATCHDOG_PID}" 2>/dev/null
 set -e
 BUILD_ELAPSED=$(( $(date +%s) - BUILD_STARTED ))
 echo "poudriere bulk exited ${BULK_RC} after ${BUILD_ELAPSED}s"
@@ -148,6 +192,16 @@ echo "${BUILD_ELAPSED}" > "${OUTDIR}/build_seconds"
 LOGDIR="/usr/local/poudriere/data/logs/bulk/${JAIL}-${PORTS_TREE}/latest"
 echo "=== poudriere log dir ==="
 ls -la "${LOGDIR}" || echo "no log dir at ${LOGDIR}"
+
+# bulk failing AND leaving no log directory means it never started a build
+# (bad jail, bad ports tree, bad slice file). That must fail the job: the
+# alternative is an all-zero result manifest that reads like a clean run
+# where nothing happened to be queued.
+if [ "${BULK_RC}" -ne 0 ] && [ ! -d "${LOGDIR}" ]; then
+    echo "FATAL: poudriere bulk failed (rc=${BULK_RC}) without producing a" >&2
+    echo "       build log, so no port was ever attempted." >&2
+    exit 1
+fi
 
 python3 - "${LOGDIR}" "${OUTDIR}/result.json" <<'PYEOF'
 import json
@@ -198,27 +252,37 @@ ls -la "${PKGDIR}" 2>/dev/null || echo "no package dir at ${PKGDIR}"
 find "${PKGDIR}" -name '*.pkg' 2>/dev/null | head -20
 find "${PKGDIR}" -name '*.pkg' 2>/dev/null | wc -l
 
-echo "=== pkg repo artefact layout (Task 6 step 1) ==="
-if [ -d "${PKGDIR}" ]; then
-    pkg repo "${PKGDIR}" || echo "pkg repo failed"
-    ls -la "${PKGDIR}"
-    for f in meta.conf packagesite.pkg data.pkg; do
-        if [ -f "${PKGDIR}/${f}" ]; then
-            echo "--- ${f} ---"
-            case "${f}" in
-                meta.conf) cat "${PKGDIR}/${f}" ;;
-                *)         tar -tvf "${PKGDIR}/${f}" ;;
-            esac
-        fi
-    done
-    cp -f "${PKGDIR}/meta.conf" "${OUTDIR}/" 2>/dev/null || true
-    if [ -f "${PKGDIR}/packagesite.pkg" ]; then
-        mkdir -p "${OUTDIR}/site"
-        tar -xf "${PKGDIR}/packagesite.pkg" -C "${OUTDIR}/site"
-        ls -la "${OUTDIR}/site"
-        head -c 600 "${OUTDIR}/site/packagesite.yaml" 2>/dev/null || true
-        echo
+# poudriere ALREADY builds the repository catalogue at the end of a bulk
+# run ("Creating pkg repository" / "Packing files for repository"), so
+# running "pkg repo" here again is not just redundant, it FAILS: the top
+# of PKGDIR is a tree of symlinks into .real_<stamp> (All -> .latest/All),
+# which pkg cannot catalogue ("Cannot create repository catalogue"), and
+# the failed attempt leaves empty data/packagesite.yaml files behind.
+# Take poudriere's own artefacts instead.
+echo "=== repository artefacts produced by poudriere ==="
+for f in meta.conf packagesite.pkg data.pkg; do
+    if [ -f "${PKGDIR}/${f}" ]; then
+        echo "--- ${f} ---"
+        case "${f}" in
+            meta.conf) cat "${PKGDIR}/${f}" ;;
+            *)         tar -tvf "${PKGDIR}/${f}" ;;
+        esac
+        cp -f "${PKGDIR}/${f}" "${OUTDIR}/" 2>/dev/null || true
+    else
+        echo "MISSING: ${PKGDIR}/${f}"
     fi
+done
+
+# packagesite.yaml is what publish.py rewrites: every repopath gets its
+# ../<shard-tag>/ prefix before the index is signed and published.
+if [ -f "${PKGDIR}/packagesite.pkg" ]; then
+    mkdir -p "${OUTDIR}/site"
+    tar -xf "${PKGDIR}/packagesite.pkg" -C "${OUTDIR}/site"
+    ls -la "${OUTDIR}/site"
+    echo "--- first manifest entry ---"
+    head -c 400 "${OUTDIR}/site/packagesite.yaml" 2>/dev/null || true
+    echo
+    echo "--- manifest entries: $(wc -l < "${OUTDIR}/site/packagesite.yaml") ---"
 fi
 
 df -h /

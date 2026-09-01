@@ -69,7 +69,13 @@ jobs:
           release: '15'
           mem: 12288
           cpu: 4
-          sync: rsync
+          # NFS, not rsync: the workspace is mounted live, so out/ written
+          # by vm_build.sh is visible on the runner immediately instead of
+          # depending on a copy-back pass. It is also the method the
+          # riscv64 images themselves support (their VM_SYNC_METHODS is
+          # "nfs,scp,tar" -- they have no rsync, which is the very gap
+          # this repository exists to close).
+          sync: nfs
           copyback: true
           envs: 'ABI_SLUG FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE'
           run: |
