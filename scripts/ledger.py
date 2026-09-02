@@ -53,6 +53,16 @@ def merge_result(led, result, now):
     for origin in result.get("failed", []):
         entry = _entry(ports, origin)
         entry["fail_count"] += 1
+        # A port that already has a published package keeps it. poudriere
+        # only rebuilds a built port when it decided the package is stale
+        # or could not see it; if that rebuild then fails, the published
+        # package is still the best thing to serve and, for ports-mgmt/pkg,
+        # the only way the next job can seed anything at all (run
+        # 33624401320 demoted pkg after a failure caused by the NFS mount,
+        # and the next job then discarded every seeded package as "pkg
+        # bootstrap missing"). The failure is counted, not applied.
+        if entry["state"] == STATE_BUILT and entry.get("pkgfile"):
+            continue
         entry["state"] = (STATE_FAILED
                           if entry["fail_count"] >= MAX_FAILURES
                           else STATE_PENDING)

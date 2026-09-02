@@ -53,6 +53,19 @@ class MergeResultTest(unittest.TestCase):
         self.assertEqual(led["ports"]["shells/bash"]["state"],
                          ledger.STATE_FAILED)
 
+    def test_failed_rebuild_keeps_the_published_package(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["ports-mgmt/pkg"])
+        ledger.merge_result(led, {"built": {"ports-mgmt/pkg": "pkg-2.8.4.pkg"}}, NOW)
+        ledger.merge_result(led, {"failed": ["ports-mgmt/pkg"]}, NOW)
+        entry = led["ports"]["ports-mgmt/pkg"]
+        self.assertEqual(entry["state"], "built")
+        self.assertEqual(entry["pkgfile"], "pkg-2.8.4.pkg")
+        self.assertEqual(entry["fail_count"], 1)
+        # and it stays built no matter how often a rebuild fails
+        for _ in range(ledger.MAX_FAILURES):
+            ledger.merge_result(led, {"failed": ["ports-mgmt/pkg"]}, NOW)
+        self.assertEqual(led["ports"]["ports-mgmt/pkg"]["state"], "built")
+
     def test_ignored_is_recorded_separately_from_failed(self):
         led = fresh()
         ledger.merge_result(led, {"ignored": ["x11/nope"]}, NOW)
