@@ -19,6 +19,15 @@ on:
         required: false
         default: '16200'
 
+# One build per ABI at a time. Every run regenerates the open shard's index
+# and rewrites ledger.json from the ledger it fetched at ITS start, so two
+# concurrent runs on the same ABI end with the last finisher's ledger
+# overwriting the other's built set (assets survive, the record does not).
+# Queue instead of cancelling: a queued run simply sees the newer ledger.
+concurrency:
+  group: build-${{ inputs.abi_slug }}
+  cancel-in-progress: false
+
 env:
   # Signer type for pkg repo: rsa, ecdsa or eddsa (pkg-repo(8) key
   # prefixes). Must match the key stored in the PKG_SIGNING_KEY secret.
