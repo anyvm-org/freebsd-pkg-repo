@@ -1,7 +1,7 @@
 name: Build
 
 permissions:
-  contents: read
+  contents: write
 
 on:
   workflow_dispatch:
@@ -49,17 +49,52 @@ jobs:
           echo "version=$(echo "$row" | awk '{print $2}')" >> "$GITHUB_OUTPUT"
           echo "arch=$(echo "$row" | awk '{print $3}')" >> "$GITHUB_OUTPUT"
           echo "jail=$(echo "$row" | awk '{print $4}')" >> "$GITHUB_OUTPUT"
+          major=$(echo "$row" | awk '{print $2}' | cut -d. -f1)
+          echo "abi=FreeBSD:${major}:$(echo "$row" | awk '{print $3}' | cut -d. -f2)" >> "$GITHUB_OUTPUT"
           echo "resolved: $row"
 
-      - name: Build the slice in a FreeBSD VM
+      # The signing key comes from a secret and is written into work/, which
+      # the VM sees over NFS. The private key never leaves this job; the VM
+      # is discarded when the job ends.
+      - name: Materialise the signing key
+        env:
+          PKG_SIGNING_KEY: ${{ secrets.PKG_SIGNING_KEY }}
+        run: |
+          set -eu
+          mkdir -p work
+          if [ -z "$PKG_SIGNING_KEY" ]; then
+            echo "PKG_SIGNING_KEY secret is not set. Generate one with" >&2
+            echo "  openssl genrsa -out repo.key 4096" >&2
+            echo "and add its contents as the PKG_SIGNING_KEY secret." >&2
+            exit 1
+          fi
+          printf '%s\n' "$PKG_SIGNING_KEY" > work/repo.key
+          chmod 600 work/repo.key
+          openssl rsa -in work/repo.key -pubout -out work/repo.pub
+          openssl rsa -in work/repo.key -noout -check
+
+      - name: Fetch the published ledger and the open shard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          PYTHONPATH=scripts python3 scripts/publish.py \
+            --repo "${{ github.repository }}" \
+            --abi-slug "${{ inputs.abi_slug }}" \
+            --workdir work \
+            prepare --existing work/existing
+
+      - name: Build the slice and stage the shards in a FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         env:
           ABI_SLUG: ${{ inputs.abi_slug }}
+          ABI: ${{ steps.abi.outputs.abi }}
           FBSD_VERSION: ${{ steps.abi.outputs.version }}
           POUDRIERE_ARCH: ${{ steps.abi.outputs.arch }}
           JAIL: ${{ steps.abi.outputs.jail }}
           PKGLIST: ${{ inputs.pkglist }}
           BUILD_DEADLINE: ${{ inputs.deadline }}
+          REPO: ${{ github.repository }}
         with:
           # Major-version prefix: freebsd-vm resolves it to the newest
           # matching release ("Only the leading, '.' separated part of it is
@@ -69,34 +104,70 @@ jobs:
           release: '15'
           mem: 12288
           cpu: 4
-          # NFS, not rsync: the workspace is mounted live, so out/ written
-          # by vm_build.sh is visible on the runner immediately instead of
-          # depending on a copy-back pass. It is also the method the
-          # riscv64 images themselves support (their VM_SYNC_METHODS is
-          # "nfs,scp,tar" -- they have no rsync, which is the very gap
-          # this repository exists to close).
+          # NFS: the workspace is mounted live, so out/ written in the VM is
+          # visible on the runner immediately, and work/ written on the
+          # runner (key, ledger, open-shard packages) is visible in the VM.
           sync: nfs
           copyback: true
-          envs: 'ABI_SLUG FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE'
+          envs: 'ABI_SLUG ABI FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE REPO'
           run: |
             set -eu
-            cp "${PKGLIST}" ./slice.txt
-            SLICE_FILE="$(pwd)/slice.txt"
-            export SLICE_FILE
+            # Run from a private copy, never off the live NFS mount: a
+            # host-side edit while sh is reading a script shifts the byte
+            # offsets it executes from.
+            rm -rf /root/build
+            mkdir -p /root/build
+            tar -cf - scripts config | tar -xf - -C /root/build
+            cp "${PKGLIST}" /root/build/slice.txt
+            cd /root/build
+            export SLICE_FILE=/root/build/slice.txt
             sh scripts/vm_build.sh
+
+            WS="$(cd "$GITHUB_WORKSPACE" && pwd)"
+            PYTHONPATH=scripts python3 scripts/mkshards.py \
+              --result   /root/build/out/result.json \
+              --packages /usr/local/poudriere/data/packages/${JAIL}-default/.latest/All \
+              --ledger   "$WS/work/ledger.json" \
+              --existing "$WS/work/existing" \
+              --key      "$WS/work/repo.key" \
+              --pubkey   "$WS/work/repo.pub" \
+              --repo     "${REPO}" \
+              --abi      "${ABI}" \
+              --abi-slug "${ABI_SLUG}" \
+              --origins  config/pkglist \
+              --ports-commit "$(cat /root/build/out/ports_commit)" \
+              --now      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --out      "$WS/out"
+            cp /root/build/out/result.json /root/build/out/build_seconds "$WS/out/" 2>/dev/null || true
+            ls -la "$WS/out" "$WS/out/shards" || true
 
       - name: Show what came back
         if: always()
         run: |
           set -eux
           ls -la out || true
+          ls -la out/shards/* || true
           cat out/result.json || true
-          cat out/ports_commit || true
-          cat out/build_seconds || true
+          cat out/upload.json || true
+          cat out/anyvm.conf || true
+
+      - name: Publish shard releases and refresh the index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          PYTHONPATH=scripts python3 scripts/publish.py \
+            --repo "${{ github.repository }}" \
+            --abi-slug "${{ inputs.abi_slug }}" \
+            publish --upload-json out/upload.json --out out --pubkey work/repo.pub
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: build-results-${{ inputs.abi_slug }}
-          path: out
+          path: |
+            out/result.json
+            out/ledger.json
+            out/anyvm.conf
+            out/upload.json
           if-no-files-found: warn

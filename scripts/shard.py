@@ -4,12 +4,24 @@ GitHub documents "Up to 1000 release assets may be associated with a single
 release" and enforces it with HTTP 422, so a full FreeBSD package set
 (38169 packages on amd64) is spread over roughly 40 shard releases.
 
-An assignment is permanent. Once the ledger records a package's shard, its
-download URL is fixed forever; moving it would break every consumer that
-cached the old URL.
+Each shard release is a complete, self-contained pkg repository: its own
+meta.conf, data.pkg, packagesite.pkg and repo.pub, all written and signed
+by "pkg repo" inside the build VM, plus the packages themselves at the
+release root. With packages at the root, pkg repo records every repopath
+as a bare filename, which is exactly the shape of a GitHub release asset
+URL -- so nothing is rewritten and nothing is re-signed. Consumers get one
+repo block per shard; pkg resolves dependencies across them (verified
+with real riscv64 packages on 2026-09-02).
+
+Shards fill sequentially: new packages always land in the current open
+shard, and a new one is opened only when that is full. An assignment is
+permanent. Once the ledger records a package's shard, its download URL is
+fixed; moving it would break every consumer that cached the old URL.
 """
 
-SHARD_CAPACITY = 990
+# Four index files also count as assets in every shard release, and a
+# little margin is kept under GitHub's hard limit of 1000.
+SHARD_CAPACITY = 985
 
 
 def shard_tag(abi_slug, index):

@@ -1,185 +1,108 @@
-"""Publish built packages as GitHub Release assets and republish the index.
+"""Runner-side half of publishing. Two subcommands:
 
-Two subcommands, matching the two halves of the workflow:
+  prepare   before the VM starts: fetch the published ledger and the
+            packages of the open shard, so mkshards.py inside the VM can
+            regenerate that shard's index from everything in it.
+  publish   after the VM: upload every staged shard directory as release
+            assets, delete superseded assets, and refresh the index release
+            (ledger.json, anyvm.conf, repo.pub).
 
-  upload-shards   run by a builder job: rename packages to safe asset names,
-                  assign shards, upload. Never touches the ledger, so
-                  parallel builders cannot race each other.
-  publish-index   run by the single collector job: merge result manifests,
-                  rewrite packagesite.yaml onto the shards, and replace the
-                  index release assets.
-
-Uses the gh CLI, which is preinstalled on GitHub-hosted runners.
+pkg repo runs in the VM (it is a FreeBSD tool); this script never touches
+a manifest or a signature. Uses the gh CLI, preinstalled on runners.
 """
 
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 
-import ledger
-import repoindex
-import sanitize
 import shard
 
-TWO_GIB = 2 * 1024 ** 3
+
+def run(argv, check=True):
+    return subprocess.run(argv, check=check, capture_output=True, text=True)
 
 
-def run(argv):
-    return subprocess.run(argv, check=True, capture_output=True, text=True)
+def release_exists(repo, tag):
+    return run(["gh", "release", "view", tag, "--repo", repo],
+               check=False).returncode == 0
 
 
-def ensure_release(repo, tag, title):
-    """Create the release if it does not exist yet. Idempotent."""
-    probe = subprocess.run(["gh", "release", "view", tag, "--repo", repo],
-                           capture_output=True, text=True)
-    if probe.returncode == 0:
+def ensure_release(repo, tag):
+    if release_exists(repo, tag):
         return
-    run(["gh", "release", "create", tag, "--repo", repo, "--title", title,
+    run(["gh", "release", "create", tag, "--repo", repo, "--title", tag,
          "--notes", "Managed by freebsd-pkg-repo. Do not edit by hand."])
+    print("created release %s" % tag)
 
 
-def upload_asset(repo, tag, path):
-    run(["gh", "release", "upload", tag, path, "--repo", repo, "--clobber"])
-
-
-def download_asset(repo, tag, name, dest):
-    """Return True if the asset existed and was fetched."""
-    probe = subprocess.run(
-        ["gh", "release", "download", tag, "--repo", repo,
-         "--pattern", name, "--dir", dest, "--clobber"],
-        capture_output=True, text=True)
+def download_assets(repo, tag, pattern, dest):
+    """Return True if at least one matching asset was fetched."""
+    os.makedirs(dest, exist_ok=True)
+    probe = run(["gh", "release", "download", tag, "--repo", repo,
+                 "--pattern", pattern, "--dir", dest, "--clobber"],
+                check=False)
     return probe.returncode == 0
 
 
-def load_ledger(repo, abi_slug, workdir):
-    """Fetch the published ledger, or None on the very first run."""
-    tag = shard.index_tag(abi_slug)
-    if download_asset(repo, tag, "ledger.json", workdir):
-        with open(os.path.join(workdir, "ledger.json")) as handle:
-            return json.load(handle)
-    return None
+def cmd_prepare(args):
+    index = shard.index_tag(args.abi_slug)
+    os.makedirs(args.workdir, exist_ok=True)
+    have_ledger = download_assets(args.repo, index, "ledger.json",
+                                  args.workdir)
+    if not have_ledger:
+        print("no published ledger yet: first run")
+        os.makedirs(args.existing, exist_ok=True)
+        return 0
 
-
-def existing_assignments(led):
-    """Rebuild {safe_asset_name: shard_index} from a ledger."""
-    existing = {}
-    if not led:
-        return existing
+    with open(os.path.join(args.workdir, "ledger.json")) as handle:
+        led = json.load(handle)
+    highest = -1
     for entry in led["ports"].values():
-        if entry.get("pkgfile") and entry.get("shard") is not None:
-            existing[sanitize.sanitize_asset_name(entry["pkgfile"])] = \
-                entry["shard"]
-    return existing
+        if entry.get("shard") is not None:
+            highest = max(highest, entry["shard"])
+    if highest < 0:
+        print("ledger has no shards yet")
+        os.makedirs(args.existing, exist_ok=True)
+        return 0
 
-
-def cmd_upload_shards(args):
-    """Rename, shard and upload every .pkg under --packages-dir."""
-    led = load_ledger(args.repo, args.abi_slug, args.workdir)
-    existing = existing_assignments(led)
-
-    originals = []
-    paths = {}
-    for root, _dirs, files in os.walk(args.packages_dir):
-        for name in files:
-            if name.endswith(".pkg"):
-                originals.append(name)
-                paths[name] = os.path.join(root, name)
-    originals.sort()
-    safe_of = sanitize.sanitize_all(originals)
-
-    oversize = {}
-    uploadable = []
-    for original in originals:
-        size = os.path.getsize(paths[original])
-        if size > TWO_GIB:
-            # GitHub refuses release assets over 2 GiB. Record and skip;
-            # the ledger marks the port oversize so it is not retried.
-            oversize[original] = size
-            continue
-        uploadable.append(original)
-
-    assignments, _counts = shard.assign_shards(
-        existing, [safe_of[name] for name in uploadable])
-
-    staging = os.path.join(args.workdir, "staging")
-    os.makedirs(staging, exist_ok=True)
-    published = {}
-    for original in uploadable:
-        safe = safe_of[original]
-        tag = shard.shard_tag(args.abi_slug, assignments[safe])
-        staged = os.path.join(staging, safe)
-        shutil.copyfile(paths[original], staged)
-        ensure_release(args.repo, tag, tag)
-        upload_asset(args.repo, tag, staged)
-        published[safe] = tag
-        os.remove(staged)
-
-    with open(args.out, "w") as handle:
-        json.dump({"published": published, "oversize": oversize},
-                  handle, indent=2, sort_keys=True)
-    print("uploaded %d assets, %d oversize" % (len(published), len(oversize)))
+    tag = shard.shard_tag(args.abi_slug, highest)
+    dest = os.path.join(args.existing, tag)
+    print("open shard is %s; fetching its packages" % tag)
+    download_assets(args.repo, tag, "*.pkg", dest)
+    count = len([f for f in os.listdir(dest) if f.endswith(".pkg")])
+    print("fetched %d packages into %s" % (count, dest))
     return 0
 
 
-def cmd_publish_index(args):
-    """Merge results, rewrite repopaths, replace the index release assets."""
+def cmd_publish(args):
+    with open(args.upload_json) as handle:
+        upload = json.load(handle)
+
+    for tag in sorted(upload.get("upload", {})):
+        ensure_release(args.repo, tag)
+        for name in upload.get("delete", {}).get(tag, []):
+            run(["gh", "release", "delete-asset", tag, name,
+                 "--repo", args.repo, "--yes"], check=False)
+            print("deleted %s from %s" % (name, tag))
+        paths = upload["upload"][tag]
+        # gh accepts many files per call; batch to keep argv sane
+        for start in range(0, len(paths), 50):
+            batch = paths[start:start + 50]
+            run(["gh", "release", "upload", tag, "--repo", args.repo,
+                 "--clobber"] + batch)
+        print("uploaded %d assets to %s" % (len(paths), tag))
+
     index = shard.index_tag(args.abi_slug)
-    ensure_release(args.repo, index, index)
-
-    led = load_ledger(args.repo, args.abi_slug, args.workdir)
-    if led is None:
-        with open(args.origins) as handle:
-            origins = [line.strip() for line in handle
-                       if line.strip() and not line.startswith("#")]
-        led = ledger.new_ledger(args.abi, args.ports_commit, origins)
-
-    published = {}
-    for path in args.results:
-        with open(path) as handle:
-            payload = json.load(handle)
-        if "published" in payload:
-            published.update(payload["published"])
-            if payload.get("oversize"):
-                ledger.merge_result(
-                    led, {"oversize": payload["oversize"]}, args.now)
-        else:
-            ledger.merge_result(led, payload, args.now)
-
-    safe_of = {}
-    shard_of = {}
-    for entry in led["ports"].values():
-        pkgfile = entry.get("pkgfile")
-        if not pkgfile:
-            continue
-        safe = sanitize.sanitize_asset_name(pkgfile)
-        tag = published.get(safe)
-        if tag is None:
-            if entry.get("shard") is None:
-                continue
-            tag = shard.shard_tag(args.abi_slug, entry["shard"])
-        entry["shard"] = int(tag.rsplit("-", 1)[1])
-        safe_of[pkgfile] = safe
-        shard_of[safe] = tag
-
-    with open(args.packagesite) as handle:
-        rewritten = list(repoindex.rewrite_stream(handle, shard_of, safe_of))
-    with open(args.packagesite, "w") as handle:
-        for line in rewritten:
-            handle.write(line + "\n")
-    print("rewrote %d manifest entries" % len(rewritten))
-
-    led_path = os.path.join(args.workdir, "ledger.json")
-    with open(led_path, "w") as handle:
-        json.dump(led, handle, indent=2, sort_keys=True)
-
-    for path in [args.packagesite, led_path] + list(args.extra):
-        if os.path.exists(path):
-            upload_asset(args.repo, index, path)
-
-    print("index published; done=%s" % ledger.is_done(led))
+    ensure_release(args.repo, index)
+    extras = [os.path.join(args.out, n) for n in ("ledger.json", "anyvm.conf")]
+    extras.append(args.pubkey)
+    extras = [p for p in extras if os.path.isfile(p)]
+    run(["gh", "release", "upload", index, "--repo", args.repo, "--clobber"]
+        + extras)
+    print("index release %s refreshed with %s"
+          % (index, [os.path.basename(p) for p in extras]))
     return 0
 
 
@@ -190,23 +113,17 @@ def main(argv=None):
     parser.add_argument("--workdir", default="work")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    up = sub.add_parser("upload-shards")
-    up.add_argument("--packages-dir", required=True)
-    up.add_argument("--out", required=True)
-    up.set_defaults(func=cmd_upload_shards)
+    prep = sub.add_parser("prepare")
+    prep.add_argument("--existing", required=True)
+    prep.set_defaults(func=cmd_prepare)
 
-    idx = sub.add_parser("publish-index")
-    idx.add_argument("--abi", required=True)
-    idx.add_argument("--ports-commit", required=True)
-    idx.add_argument("--origins", required=True)
-    idx.add_argument("--packagesite", required=True)
-    idx.add_argument("--now", required=True)
-    idx.add_argument("--results", nargs="+", required=True)
-    idx.add_argument("--extra", nargs="*", default=[])
-    idx.set_defaults(func=cmd_publish_index)
+    pub = sub.add_parser("publish")
+    pub.add_argument("--upload-json", required=True)
+    pub.add_argument("--out", required=True)
+    pub.add_argument("--pubkey", required=True)
+    pub.set_defaults(func=cmd_publish)
 
     args = parser.parse_args(argv)
-    os.makedirs(args.workdir, exist_ok=True)
     return args.func(args)
 
 

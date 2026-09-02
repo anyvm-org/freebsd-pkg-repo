@@ -48,7 +48,8 @@ public key and the measured build numbers once it does.
 | `scripts/sanitize.py` | Package filename to GitHub-safe asset name. |
 | `scripts/shard.py` | Permanent assignment of assets to shard releases. |
 | `scripts/ledger.py` | Build ledger: schema, merge, pending/done queries. |
-| `scripts/repoindex.py` | Rewrites manifest repopaths onto the shards. |
+| `scripts/mkshards.py` | Runs inside the VM after the build: stages each touched shard flat, runs `pkg repo` on it (index + signature), writes the ledger and the consumer config. |
+| `scripts/publish.py` | Runs on the runner: fetches the ledger and open shard before the VM, uploads shard releases after. |
 | `scripts/vm_build.sh` | Runs inside the VM: emulation, jail, poudriere. |
 | `tests/` | Unit tests for the four pure modules. |
 
