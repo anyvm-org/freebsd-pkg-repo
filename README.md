@@ -15,10 +15,64 @@ them as GitHub Release assets.
 
 ## Status
 
-**Pilot in progress. There is nothing to install yet.** The design and the
-implementation plan are committed; the first build has not produced a
-usable repository. This README will carry the consumer configuration, the
-public key and the measured build numbers once it does.
+**Pilot published on 2026-09-02.** Shard `pkg-FreeBSD-15-riscv64-000`
+holds `pkg`, `tree` and tree's three build dependencies, signed with the
+ECDSA key below, and a real FreeBSD 15.1 riscv64 guest installs from it.
+The next slice is `config/pkglist.bootstrap` (rsync, sshfs, bash, sudo,
+curl, git, python3), the set that gives the riscv64 anyvm images their
+`rsync` and `sshfs` back.
+
+## Installing
+
+On a FreeBSD 15.x riscv64 machine, as root:
+
+```
+mkdir -p /usr/local/etc/pkg/repos /usr/local/etc/pkg/keys
+fetch -o /usr/local/etc/pkg/keys/anyvm.pub \
+  https://github.com/anyvm-org/freebsd-pkg-repo/releases/download/idx-FreeBSD-15-riscv64/repo.pub
+sha256 /usr/local/etc/pkg/keys/anyvm.pub
+fetch -o /usr/local/etc/pkg/repos/anyvm.conf \
+  https://github.com/anyvm-org/freebsd-pkg-repo/releases/download/idx-FreeBSD-15-riscv64/anyvm.conf
+pkg update
+pkg install tree
+```
+
+The `sha256` line must print the fingerprint in the next section.
+`anyvm.conf` carries one repository block per shard release; fetch it
+again when a new shard appears. The stock `FreeBSD` repository has no
+riscv64 packages at all, so silencing it avoids noise:
+
+```
+printf 'FreeBSD: { enabled: no }\n' > /usr/local/etc/pkg/repos/FreeBSD.conf
+```
+
+The `pkg` the anyvm riscv64 image ships (2.6.2 on 15.1) verifies the
+ECDSA signature as-is, then upgrades itself to the `pkg` in the shard
+before installing anything else. A machine with no `pkg` at all cannot
+use the `pkg` bootstrapper, which insists on a `Latest/pkg.pkg` path that
+a flat release cannot serve; instead fetch `pkg-<version>.pkg` from the
+shard release by name, extract `pkg-static` from it, and run
+`pkg-static add` on it.
+
+## Measured
+
+Pilot slice, `sysutils/tree` (five packages: pkg, indexinfo,
+gettext-runtime, gmake, tree):
+
+| | local VM, 16 cores | GitHub runner, 4 cores |
+| --- | --- | --- |
+| whole build step | 27 min | 38m07s |
+| `poudriere bulk`, 5 packages | 16m08s | 34m41s |
+| `ports-mgmt/pkg` alone | not isolated | 15m57s |
+| jail creation, `NO_SRC=yes` | 9m59s | not isolated |
+
+Earlier local slice, `net/rsync` and its closure, 32 packages, 16 cores:
+2h42m total, 304 s per package, 8.7 GB peak disk in the VM, zero
+failures.
+
+Consumer check: FreeBSD 15.1-RELEASE riscv64 under QEMU TCG, shipped
+`pkg` 2.6.2, `pkg update` verified the signature, `pkg install tree`
+fetched from the release and ran. No manual bootstrap was needed.
 
 ## Signing key
 
@@ -88,3 +142,8 @@ Design and plan live in the
 
 These packages are unofficial and community-built. They are not produced,
 reviewed or endorsed by the FreeBSD Project.
+
+Only `FreeBSD:15:riscv64` exists so far. FreeBSD 13.x and 14.x images
+have not been tested; the `pkg` they ship may predate ECDSA signature
+verification, in which case they will need the manual `pkg-static add`
+route above before `pkg update` can verify the repository.

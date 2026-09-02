@@ -23,9 +23,13 @@ uname -a
 df -h /
 
 # The catalogue fetch is the first network call in a VM that booted seconds
-# ago. One CI run died right here on a transient miss ("Error updating
-# repositories! ... Repository FreeBSD-ports cannot be opened", 2026-09-02),
-# so retry it -- bounded, and fatal when the bound is hit.
+# ago, so it is retried -- bounded, and fatal when the bound is hit. The ABI
+# line exists because one CI run died right here for a different reason:
+# build.yml had exported ABI=FreeBSD:15:riscv64 into the VM, pkg reads $ABI
+# from the environment, and the amd64 host then asked pkg.freebsd.org for
+# riscv64 packages it does not have ("Error updating repositories!",
+# 2026-09-02). The variable is TARGET_ABI now; this line makes any repeat
+# of that poisoning visible in the first screen of the log.
 echo "pkg ABI on the build host: $(pkg config ABI 2>/dev/null || echo unknown)"
 attempt=0
 until env IGNORE_OSVERSION=yes pkg update -f; do
