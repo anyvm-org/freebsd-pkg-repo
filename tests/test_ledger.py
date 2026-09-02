@@ -87,6 +87,24 @@ class MergeResultTest(unittest.TestCase):
         self.assertEqual(led["ports"]["net/rsync"]["fail_count"], 0)
 
 
+class AddOriginsTest(unittest.TestCase):
+
+    def test_new_origins_are_queued_pending(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["sysutils/tree"])
+        added = ledger.add_origins(led, ["net/rsync", "sysutils/tree"])
+        self.assertEqual(added, ["net/rsync"])
+        self.assertEqual(led["ports"]["net/rsync"]["state"], "pending")
+        self.assertEqual(ledger.pending_origins(led), ["net/rsync", "sysutils/tree"])
+        self.assertFalse(ledger.is_done(led))
+
+    def test_existing_entries_keep_their_state(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["sysutils/tree"])
+        ledger.merge_result(led, {"built": {"sysutils/tree": "tree-2.3.2.pkg"}}, NOW)
+        ledger.add_origins(led, ["sysutils/tree"])
+        self.assertEqual(led["ports"]["sysutils/tree"]["state"], "built")
+        self.assertTrue(ledger.is_done(led))
+
+
 class DoneTest(unittest.TestCase):
 
     def test_not_done_while_anything_pends(self):

@@ -1,5 +1,5 @@
 net/rsync
-sysutils/fusefs-sshfs
+filesystems/sshfs
 shells/bash
 security/sudo
 ftp/curl

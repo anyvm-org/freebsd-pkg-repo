@@ -224,13 +224,20 @@ def main(argv=None):
     with open(args.result) as handle:
         result = json.load(handle)
 
+    with open(args.origins) as handle:
+        origins = [line.strip() for line in handle
+                   if line.strip() and not line.startswith("#")]
     if args.ledger and os.path.isfile(args.ledger):
         with open(args.ledger) as handle:
             led = json.load(handle)
+        # The slice being built may list ports the ledger has never seen
+        # (a new pkglist against a ledger made for an earlier one); they
+        # are pending until poudriere reports them built.
+        added = ledger.add_origins(led, origins)
+        if added:
+            print("ledger: %d new origins queued from %s"
+                  % (len(added), args.origins))
     else:
-        with open(args.origins) as handle:
-            origins = [line.strip() for line in handle
-                       if line.strip() and not line.startswith("#")]
         led = ledger.new_ledger(args.abi, args.ports_commit, origins)
 
     # failures / ignores / oversize first, then the built set via plan()

@@ -38,6 +38,24 @@ def new_ledger(abi, ports_commit, origins):
     }
 
 
+def add_origins(led, origins):
+    """Queue every origin not yet in the ledger as pending. Entries that
+    exist keep their state: a built dependency stays built, a listed port
+    that already failed keeps its count. Returns the origins added.
+
+    Without this an existing ledger never learned about a new slice: run
+    33639294075 built 92 of a 115-port bootstrap slice, and the ledger,
+    created for a one-port pilot, reported pending=0 done=True with 18
+    ports still to build.
+    """
+    added = []
+    for origin in origins:
+        if origin not in led["ports"]:
+            led["ports"][origin] = _blank_entry()
+            added.append(origin)
+    return added
+
+
 def merge_result(led, result, now):
     """Fold one builder job's result manifest into the ledger.
 
