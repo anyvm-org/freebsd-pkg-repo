@@ -84,13 +84,16 @@ VM with 16 cores:
 | fix | `MAKE_JOBS_UNSAFE=yes` for `lang/python3*` only (`poudriere.d/make.conf`); python312 then built in 24m54s |
 | `prepare` step | 569 s on a fresh jail (jail creation 9m01s); cached with the image afterwards |
 
-On the 4-core runner the same slice, with the fix, built 92 of the 115
-packages in 4h29m (about 176 s per package, `python312` among them,
-zero failures) before the 4.5-hour `BUILD_DEADLINE` watchdog stopped
-poudriere; the remaining 23 are picked up by the next run, which seeds
-poudriere with everything already published so nothing is rebuilt. The
-`prepare` step took about two minutes on the runner (jail creation 9 s
-from download.freebsd.org) and the cached prepared image is 1.71 GiB.
+On the 4-core runner the same slice, with the fix, builds about 92
+packages per 4.5-hour `BUILD_DEADLINE` (176 s per package, `python312`
+among them, zero failures). The first such run lost its packages
+because they lived inside the VM; with the package directory on the
+runner, the run of 2026-09-02 seeded the 5 published packages
+(`Queued: 110`), built 92 more, was stopped by the watchdog, and
+published all 97 to shard 000 in the same job; the next run seeds those
+97 and builds the remaining 18. The `prepare` step took about two
+minutes on the runner (jail creation 9 s from download.freebsd.org)
+and the cached prepared image is 1.71 GiB.
 
 ## Signing key
 
