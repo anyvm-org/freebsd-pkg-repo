@@ -56,6 +56,17 @@ if ! binmiscctl lookup "${TARGET_ARCH}" >/dev/null 2>&1; then
 fi
 
 if ! binmiscctl lookup "${TARGET_ARCH}" >/dev/null 2>&1; then
+    # The hand-written fallback below encodes riscv64's ELF magic and the
+    # qemu-riscv64-static path only. For any other target the rc script is
+    # the sole source of a correct activator (it names the ppc64 binary
+    # qemu-ppc64-static, not qemu-powerpc64-static, for instance), so a
+    # miss there is fatal rather than papered over with the wrong magic.
+    if [ "${TARGET_ARCH}" != "riscv64" ]; then
+        echo "FATAL: service qemu_user_static did not register ${TARGET_ARCH}," >&2
+        echo "       and the manual fallback only knows riscv64" >&2
+        binmiscctl list >&2 || true
+        exit 1
+    fi
     # magic/mask decode, byte by byte:
     #   00-03 7f 45 4c 46            \x7fELF
     #   04    02                     EI_CLASS   = ELFCLASS64

@@ -3,3 +3,4 @@
 # concrete base.txz URL. The amd64 build host is selected separately in
 # build.yml with a major-version prefix.
 FreeBSD-15-riscv64    15.1-RELEASE      riscv.riscv64    rv64
+FreeBSD-15-powerpc64  15.1-RELEASE      powerpc.powerpc64  ppc64
