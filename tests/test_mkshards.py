@@ -87,6 +87,18 @@ class PlanSecondRunTest(unittest.TestCase):
         self.assertEqual(led["ports"]["a/a"]["shard"], 1)
 
 
+class KeyArgumentTest(unittest.TestCase):
+
+    def test_prefix_is_always_explicit(self):
+        self.assertEqual(mkshards.key_argument("rsa", "/k"), "rsa:/k")
+        self.assertEqual(mkshards.key_argument("ecdsa", "/k"), "ecdsa:/k")
+        self.assertEqual(mkshards.key_argument("eddsa", "/k"), "eddsa:/k")
+
+    def test_unknown_type_is_fatal(self):
+        with self.assertRaises(ValueError):
+            mkshards.key_argument("dsa", "/k")
+
+
 class ConfTest(unittest.TestCase):
 
     def test_one_block_per_shard_zero_to_max(self):

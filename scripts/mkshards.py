@@ -46,6 +46,19 @@ REPO_NAME_PREFIX = "anyvm"
 PUBKEY_PATH = "/usr/local/etc/pkg/keys/anyvm.pub"
 INDEX_FILES = ("meta.conf", "data.pkg", "packagesite.pkg")
 
+# pkg-repo(8) selects the signer by a prefix on the key path: "rsa:" (the
+# default when omitted), "ecdsa:", or "eddsa:" (alias "ecc:"). Always
+# write the prefix explicitly so the choice is visible in the log.
+KEY_TYPES = ("rsa", "ecdsa", "eddsa")
+
+
+def key_argument(key_type, path):
+    """The <signer-type>:<keyfile> argument pkg repo expects."""
+    if key_type not in KEY_TYPES:
+        raise ValueError("unknown key type %r; expected one of %s"
+                         % (key_type, ", ".join(KEY_TYPES)))
+    return "%s:%s" % (key_type, path)
+
 
 def plan(led, built, now, capacity=shard.SHARD_CAPACITY):
     """Decide which shard each new package goes to, and update the ledger.
@@ -153,7 +166,8 @@ def execute(spec_by_shard, args):
         print("pkg repo %s (%d existing + %d new, %d superseded)"
               % (tag, len(spec["existing"]), len(spec["new"]),
                  len(spec["delete"])))
-        subprocess.run(["pkg", "repo", stage, args.key], check=True)
+        subprocess.run(["pkg", "repo", stage,
+                        key_argument(args.key_type, args.key)], check=True)
         for name in INDEX_FILES:
             if not os.path.isfile(os.path.join(stage, name)):
                 fatal("pkg repo did not produce %s in %s" % (name, stage))
@@ -173,6 +187,7 @@ def main(argv=None):
     parser.add_argument("--ledger")
     parser.add_argument("--existing", required=True)
     parser.add_argument("--key", required=True)
+    parser.add_argument("--key-type", choices=KEY_TYPES, default="rsa")
     parser.add_argument("--pubkey", required=True)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--abi", required=True)

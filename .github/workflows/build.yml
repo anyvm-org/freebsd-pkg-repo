@@ -19,6 +19,11 @@ on:
         required: false
         default: '16200'
 
+env:
+  # Signer type for pkg repo: rsa, ecdsa or eddsa (pkg-repo(8) key
+  # prefixes). Must match the key stored in the PKG_SIGNING_KEY secret.
+  PKG_KEY_TYPE: ecdsa
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -56,22 +61,31 @@ jobs:
       # The signing key comes from a secret and is written into work/, which
       # the VM sees over NFS. The private key never leaves this job; the VM
       # is discarded when the job ends.
+      #
+      # The secret holds the key BASE64-ENCODED. pkg's ecdsa and eddsa
+      # signers (pkgsign_ecc.c, libecc) accept only keys made by
+      # "pkg key --create", which are binary -- 148 bytes for ecdsa -- and a
+      # GitHub secret is text. OpenSSL-made EC keys are rejected outright:
+      # pkgsign_ossl.c checks EVP_PKEY_id(pkey) != EVP_PKEY_RSA and bails
+      # (measured 2026-09-02: "failed to decode private key" for both SEC1
+      # and PKCS#8). Nothing here can inspect the key; pkg repo in the VM
+      # is the check, and it fails loudly on a bad one.
       - name: Materialise the signing key
         env:
-          PKG_SIGNING_KEY: ${{ secrets.PKG_SIGNING_KEY }}
+          PKG_SIGNING_KEY_B64: ${{ secrets.PKG_SIGNING_KEY }}
         run: |
           set -eu
           mkdir -p work
-          if [ -z "$PKG_SIGNING_KEY" ]; then
-            echo "PKG_SIGNING_KEY secret is not set. Generate one with" >&2
-            echo "  openssl genrsa -out repo.key 4096" >&2
-            echo "and add its contents as the PKG_SIGNING_KEY secret." >&2
+          if [ -z "$PKG_SIGNING_KEY_B64" ]; then
+            echo "PKG_SIGNING_KEY secret is not set. On a FreeBSD box:" >&2
+            echo "  pkg key --create -t ${PKG_KEY_TYPE} repo.key" >&2
+            echo "  openssl base64 -A -in repo.key | gh secret set PKG_SIGNING_KEY --repo ${{ github.repository }}" >&2
             exit 1
           fi
-          printf '%s\n' "$PKG_SIGNING_KEY" > work/repo.key
+          printf '%s' "$PKG_SIGNING_KEY_B64" | base64 -d > work/repo.key
           chmod 600 work/repo.key
-          openssl rsa -in work/repo.key -pubout -out work/repo.pub
-          openssl rsa -in work/repo.key -noout -check
+          test -s work/repo.key
+          echo "key: $(wc -c < work/repo.key) bytes, type ${PKG_KEY_TYPE}"
 
       - name: Fetch the published ledger and the open shard
         env:
@@ -95,6 +109,7 @@ jobs:
           PKGLIST: ${{ inputs.pkglist }}
           BUILD_DEADLINE: ${{ inputs.deadline }}
           REPO: ${{ github.repository }}
+          PKG_KEY_TYPE: ${{ env.PKG_KEY_TYPE }}
         with:
           # Major-version prefix: freebsd-vm resolves it to the newest
           # matching release ("Only the leading, '.' separated part of it is
@@ -109,7 +124,7 @@ jobs:
           # runner (key, ledger, open-shard packages) is visible in the VM.
           sync: nfs
           copyback: true
-          envs: 'ABI_SLUG ABI FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE REPO'
+          envs: 'ABI_SLUG ABI FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE'
           run: |
             set -eu
             # Run from a private copy, never off the live NFS mount: a
@@ -124,12 +139,19 @@ jobs:
             sh scripts/vm_build.sh
 
             WS="$(cd "$GITHUB_WORKSPACE" && pwd)"
+            # The public key is derived HERE, by pkg itself: for the ecc
+            # signers it is a binary DER blob only pkg key can produce, and
+            # this is also the exact bytes consumers put in pubkey:.
+            pkg key --public -t "${PKG_KEY_TYPE}" "$WS/work/repo.key" > "$WS/work/repo.pub"
+            test -s "$WS/work/repo.pub"
+            echo "repo.pub: $(wc -c < "$WS/work/repo.pub") bytes, sha256 $(sha256 -q "$WS/work/repo.pub")"
             PYTHONPATH=scripts python3 scripts/mkshards.py \
               --result   /root/build/out/result.json \
               --packages /usr/local/poudriere/data/packages/${JAIL}-default/.latest/All \
               --ledger   "$WS/work/ledger.json" \
               --existing "$WS/work/existing" \
               --key      "$WS/work/repo.key" \
+              --key-type "${PKG_KEY_TYPE}" \
               --pubkey   "$WS/work/repo.pub" \
               --repo     "${REPO}" \
               --abi      "${ABI}" \
