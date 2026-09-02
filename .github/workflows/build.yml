@@ -102,7 +102,7 @@ jobs:
         uses: vmactions/freebsd-vm@v1
         env:
           ABI_SLUG: ${{ inputs.abi_slug }}
-          ABI: ${{ steps.abi.outputs.abi }}
+          TARGET_ABI: ${{ steps.abi.outputs.abi }}
           FBSD_VERSION: ${{ steps.abi.outputs.version }}
           POUDRIERE_ARCH: ${{ steps.abi.outputs.arch }}
           JAIL: ${{ steps.abi.outputs.jail }}
@@ -124,7 +124,7 @@ jobs:
           # runner (key, ledger, open-shard packages) is visible in the VM.
           sync: nfs
           copyback: true
-          envs: 'ABI_SLUG ABI FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE'
+          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE'
           run: |
             set -eu
             # Run from a private copy, never off the live NFS mount: a
@@ -154,7 +154,7 @@ jobs:
               --key-type "${PKG_KEY_TYPE}" \
               --pubkey   "$WS/work/repo.pub" \
               --repo     "${REPO}" \
-              --abi      "${ABI}" \
+              --abi      "${TARGET_ABI}" \
               --abi-slug "${ABI_SLUG}" \
               --origins  config/pkglist \
               --ports-commit "$(cat /root/build/out/ports_commit)" \

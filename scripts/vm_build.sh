@@ -22,6 +22,21 @@ echo "=== host ==="
 uname -a
 df -h /
 
+# The catalogue fetch is the first network call in a VM that booted seconds
+# ago. One CI run died right here on a transient miss ("Error updating
+# repositories! ... Repository FreeBSD-ports cannot be opened", 2026-09-02),
+# so retry it -- bounded, and fatal when the bound is hit.
+echo "pkg ABI on the build host: $(pkg config ABI 2>/dev/null || echo unknown)"
+attempt=0
+until env IGNORE_OSVERSION=yes pkg update -f; do
+    attempt=$((attempt + 1))
+    if [ "${attempt}" -ge 5 ]; then
+        echo "FATAL: pkg update failed ${attempt} times" >&2
+        exit 1
+    fi
+    echo "pkg update failed (attempt ${attempt}); retrying in 15s" >&2
+    sleep 15
+done
 env IGNORE_OSVERSION=yes pkg install -y poudriere qemu-user-static git python3
 
 # ---------------------------------------------------------------------
