@@ -76,6 +76,36 @@ def seed_layout(root, epoch):
     return all_dir
 
 
+def pkg_package_name(led):
+    """Original file name of the ports-mgmt/pkg package in the ledger, or
+    None when it is not built."""
+    entry = led.get("ports", {}).get("ports-mgmt/pkg")
+    if not entry or entry.get("state") != "built" or not entry.get("pkgfile"):
+        return None
+    return entry.get("pkgfile_orig") or entry["pkgfile"]
+
+
+def link_latest_pkg(led, all_dir):
+    """poudriere's ensure_pkg_installed (common.sh) bootstraps pkg into
+    the jail from packages/Latest/pkg.pkg and, when that file is missing,
+    runs delete_all_pkgs ("pkg bootstrap missing: unable to inspect
+    existing packages") -- every seeded package is thrown away (measured
+    2026-09-02, run 33624401320). Recreate the symlink poudriere itself
+    leaves behind: Latest/pkg.pkg -> ../All/pkg-<version>.pkg. Returns
+    the link target, or None when pkg is not among the seeded files."""
+    name = pkg_package_name(led)
+    if not name or not os.path.isfile(os.path.join(all_dir, name)):
+        return None
+    latest_dir = os.path.join(os.path.dirname(all_dir), "Latest")
+    os.makedirs(latest_dir, exist_ok=True)
+    link = os.path.join(latest_dir, "pkg.pkg")
+    target = os.path.join("..", "All", name)
+    if os.path.lexists(link):
+        os.remove(link)
+    os.symlink(target, link)
+    return target
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ledger", required=True)
@@ -104,7 +134,13 @@ def main(argv=None):
     all_dir = seed_layout(args.dest, time.time())
     for source, original in pairs:
         shutil.copyfile(source, os.path.join(all_dir, original))
+    latest = link_latest_pkg(led, all_dir)
     print("seed: placed %d published packages into %s" % (len(pairs), all_dir))
+    if latest:
+        print("seed: Latest/pkg.pkg -> %s" % latest)
+    else:
+        print("seed: WARNING: no ports-mgmt/pkg package seeded; poudriere "
+              "will discard every seeded package (pkg bootstrap missing)")
     return 0
 
 

@@ -201,7 +201,7 @@ jobs:
               --repo     "${REPO}" \
               --abi      "${TARGET_ABI}" \
               --abi-slug "${ABI_SLUG}" \
-              --origins  config/pkglist \
+              --origins  "${PKGLIST}" \
               --ports-commit "$(cat /root/build/out/ports_commit)" \
               --now      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --out      "$WS/out"

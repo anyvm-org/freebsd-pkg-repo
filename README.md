@@ -133,7 +133,15 @@ removing repository"), which is the intended failure mode.
   that directory with every package already published, under the
   original file names, so poudriere unqueues them instead of rebuilding;
   and every package poudriere writes is on the runner the moment it
-  exists, even when the deadline watchdog interrupts the build.
+  exists, even when the deadline watchdog interrupts the build. Two
+  poudriere details make or break this: the seed must use poudriere's
+  committed layout (`.latest/All`, not `.building/All`, which
+  `convert_repository` moves away on a never-committed jail) and must
+  include `Latest/pkg.pkg`, or `ensure_pkg_installed` deletes every
+  existing package before looking at it. The NFS export squashes the
+  guest's root to the runner's uid, so poudriere builds as root
+  (`BUILD_AS_NON_ROOT=no`); as `nobody` the package phase cannot write
+  its staging directory on that mount.
 - Packages are renamed to GitHub-safe asset names and uploaded to numbered
   shard releases. GitHub allows at most 1000 assets per release, so a full
   package set needs about 40 shards.

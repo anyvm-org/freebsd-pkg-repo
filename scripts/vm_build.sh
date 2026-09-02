@@ -66,6 +66,22 @@ if [ -n "${PKGDATA:-}" ]; then
     fi
     ln -sfn "${PKGDATA}/packages" "${PKGROOT}"
     echo "poudriere packages dir -> ${PKGDATA}/packages (host side)"
+    # The export squashes the guest's root to the runner's uid, so a
+    # chown to any other user on that mount is refused. poudriere's
+    # package phase chowns its .npkg staging directory (on the package
+    # mount) to the build user and the jail then mkdirs into it: as
+    # nobody that is "chown: Operation not permitted" followed by
+    # "mkdir: /.npkg/All: Permission denied" and every port fails in
+    # its package phase (run 33624401320). Building as root keeps every
+    # write on that mount coming from the one uid the export allows.
+    # Written here, not in the prepared image, so the cached image stays
+    # valid; the image is a snapshot, nothing persists.
+    # poudriere 3.4.8 still prints "Will build as nobody:nobody" with
+    # this set: that line shows PORTBUILD_USER, the per-phase user is
+    # chosen separately (BUILD_AS_NON_ROOT = yes && no NEED_ROOT).
+    sed -i '' '/^BUILD_AS_NON_ROOT=/d' /usr/local/etc/poudriere.conf
+    printf '\nBUILD_AS_NON_ROOT=no\n' >> /usr/local/etc/poudriere.conf
+    echo "BUILD_AS_NON_ROOT=no (packages on a root-squashed NFS export)"
     echo "seeded packages: $(ls "${PKGDATA}/packages/${JAIL}-${PORTS_TREE}/.latest/All" 2>/dev/null | wc -l | tr -d ' ')"
 fi
 

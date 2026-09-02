@@ -101,5 +101,45 @@ class SeedLayoutTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, ".real_9")))
 
 
+@unittest.skipUnless(can_symlink(), "needs symlink support")
+class LatestPkgLinkTest(unittest.TestCase):
+    """ensure_pkg_installed reads packages/Latest/pkg.pkg; without it
+    poudriere deletes every existing package before inspecting them."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.all_dir = os.path.join(self.tmp, ".real_1", "All")
+        os.makedirs(self.all_dir)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_links_the_seeded_pkg_package(self):
+        open(os.path.join(self.all_dir, "pkg-2.8.4.pkg"), "w").close()
+        led = {"ports": {"ports-mgmt/pkg": entry("built", "pkg-2.8.4.pkg")}}
+        self.assertEqual(seed.link_latest_pkg(led, self.all_dir),
+                         os.path.join("..", "All", "pkg-2.8.4.pkg"))
+        link = os.path.join(self.tmp, ".real_1", "Latest", "pkg.pkg")
+        self.assertTrue(os.path.islink(link))
+        self.assertTrue(os.path.isfile(link))
+
+    def test_no_pkg_in_ledger_means_no_link(self):
+        led = {"ports": {"sysutils/tree": entry("built", "tree-2.3.2.pkg")}}
+        self.assertIsNone(seed.link_latest_pkg(led, self.all_dir))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.tmp, ".real_1", "Latest")))
+
+    def test_pkg_in_ledger_but_file_missing_means_no_link(self):
+        led = {"ports": {"ports-mgmt/pkg": entry("built", "pkg-2.8.4.pkg")}}
+        self.assertIsNone(seed.link_latest_pkg(led, self.all_dir))
+
+    def test_uses_the_original_name(self):
+        open(os.path.join(self.all_dir, "pkg-2.8.4,1.pkg"), "w").close()
+        led = {"ports": {"ports-mgmt/pkg": entry(
+            "built", "pkg-2.8.4-1.pkg", "pkg-2.8.4,1.pkg")}}
+        self.assertEqual(seed.link_latest_pkg(led, self.all_dir),
+                         os.path.join("..", "All", "pkg-2.8.4,1.pkg"))
+
+
 if __name__ == "__main__":
     unittest.main()
