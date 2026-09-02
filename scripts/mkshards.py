@@ -106,7 +106,12 @@ def plan(led, built, now, capacity=shard.SHARD_CAPACITY):
     ledger.merge_result(
         led, {"built": dict((o, safe_of[built[o]]) for o in built)}, now)
     for origin in built:
-        led["ports"][origin]["shard"] = assignments[safe_of[built[origin]]]
+        entry = led["ports"][origin]
+        entry["shard"] = assignments[safe_of[built[origin]]]
+        # Sanitising is not reversible (',' and '+' both become '-'), and
+        # poudriere looks for packages by their original file name, so
+        # seeding a later build from published assets needs this kept.
+        entry["pkgfile_orig"] = built[origin]
     return result
 
 
@@ -135,6 +140,21 @@ def fatal(msg):
     sys.exit(1)
 
 
+def find_package(dirs, name):
+    """First directory in dirs holding name, or None.
+
+    A bulk that the deadline watchdog interrupted never runs poudriere's
+    "committing packages" step, so its finished packages are not under
+    .latest/All but in the in-progress directory. Callers pass every
+    candidate directory in preference order.
+    """
+    for directory in dirs:
+        path = os.path.join(directory, name)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 def execute(spec_by_shard, args):
     """Stage each touched shard, run pkg repo on it, write the outputs."""
     shards_dir = os.path.join(args.out, "shards")
@@ -157,10 +177,10 @@ def execute(spec_by_shard, args):
             shutil.copyfile(src, os.path.join(stage, safe))
 
         for safe, original in spec["new"].items():
-            src = os.path.join(args.packages, original)
-            if not os.path.isfile(src):
-                fatal("built package %s not found under %s"
-                      % (original, args.packages))
+            src = find_package(args.packages, original)
+            if src is None:
+                fatal("built package %s not found under any of: %s"
+                      % (original, ", ".join(args.packages)))
             shutil.copyfile(src, os.path.join(stage, safe))
 
         print("pkg repo %s (%d existing + %d new, %d superseded)"
@@ -183,7 +203,10 @@ def execute(spec_by_shard, args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--result", required=True)
-    parser.add_argument("--packages", required=True)
+    parser.add_argument("--packages", action="append", required=True,
+                        help="directory holding built .pkg files; repeat "
+                             "in preference order (committed dir first, "
+                             "then poudriere's in-progress dir)")
     parser.add_argument("--ledger")
     parser.add_argument("--existing", required=True)
     parser.add_argument("--key", required=True)

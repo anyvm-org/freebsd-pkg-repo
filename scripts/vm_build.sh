@@ -48,6 +48,27 @@ ports_tree_exists "${PORTS_TREE}" || {
 ensure_binmisc "${TARGET_ARCH}"
 binmiscctl lookup "${TARGET_ARCH}" | sed -n '1,2p'
 
+# Packages live on the HOST. PKGDATA is a directory on the NFS-mounted
+# runner workspace (kernel NFS: freebsd-vm maps sync=nfs to anyvm's
+# sys-nfs on Linux). poudriere has no packages-only location knob --
+# POUDRIERE_DATA would drag the .m builder mounts and logs along -- so
+# its packages directory becomes a symlink onto the host path. Every
+# package poudriere writes, committed or interrupted, is then on the
+# runner the moment it exists, and the published packages the runner
+# seeded before the VM started are already there for poudriere to
+# unqueue ("Using packages from previously failed, or uncommitted,
+# build"). The VM image never holds packages.
+PKGROOT=/usr/local/poudriere/data/packages
+if [ -n "${PKGDATA:-}" ]; then
+    mkdir -p "${PKGDATA}/packages" /usr/local/poudriere/data
+    if [ -d "${PKGROOT}" ] && [ ! -L "${PKGROOT}" ]; then
+        mv "${PKGROOT}" "${PKGROOT}.local.$(date +%s)"
+    fi
+    ln -sfn "${PKGDATA}/packages" "${PKGROOT}"
+    echo "poudriere packages dir -> ${PKGDATA}/packages (host side)"
+    echo "seeded packages: $(ls "${PKGDATA}/packages/${JAIL}-${PORTS_TREE}/.latest/All" 2>/dev/null | wc -l | tr -d ' ')"
+fi
+
 # Pin the ports tree commit for the ledger. The tree is frozen inside the
 # cached image, so this changes only when the prepare text changes.
 if git -C "/usr/local/poudriere/ports/${PORTS_TREE}" rev-parse HEAD \
@@ -172,7 +193,7 @@ fi
 # ("Creating pkg repository"); running "pkg repo" here again is not just
 # redundant, it fails on the symlink layout. Take poudriere's artefacts.
 # ---------------------------------------------------------------------
-PKGDIR="/usr/local/poudriere/data/packages/${JAIL}-${PORTS_TREE}"
+PKGDIR="${PKGROOT}/${JAIL}-${PORTS_TREE}"
 echo "=== packages ==="
 find "${PKGDIR}" -name '*.pkg' 2>/dev/null | wc -l
 echo "=== repository artefacts produced by poudriere ==="

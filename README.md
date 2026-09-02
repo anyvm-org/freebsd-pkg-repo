@@ -74,6 +74,24 @@ Consumer check: FreeBSD 15.1-RELEASE riscv64 under QEMU TCG, shipped
 `pkg` 2.6.2, `pkg update` verified the signature, `pkg install tree`
 fetched from the release and ran. No manual bootstrap was needed.
 
+Bootstrap slice (`config/pkglist.bootstrap`, 115 ports queued), local
+VM with 16 cores:
+
+| | |
+| --- | --- |
+| first attempt | 48 built in 45m11s (68 s per package), then `lang/python312` failed in its package phase and 66 dependents were skipped |
+| cause | Python's `compileall -jN` uses multiprocessing, whose semaphores misbehave under qemu-user; the port ignores the error and every `.pyc` in the plist goes missing |
+| fix | `MAKE_JOBS_UNSAFE=yes` for `lang/python3*` only (`poudriere.d/make.conf`); python312 then built in 24m54s |
+| `prepare` step | 569 s on a fresh jail (jail creation 9m01s); cached with the image afterwards |
+
+On the 4-core runner the same slice, with the fix, built 92 of the 115
+packages in 4h29m (about 176 s per package, `python312` among them,
+zero failures) before the 4.5-hour `BUILD_DEADLINE` watchdog stopped
+poudriere; the remaining 23 are picked up by the next run, which seeds
+poudriere with everything already published so nothing is rebuilt. The
+`prepare` step took about two minutes on the runner (jail creation 9 s
+from download.freebsd.org) and the cached prepared image is 1.71 GiB.
+
 ## Signing key
 
 Every shard release and the index release carry `repo.pub`, the public
@@ -107,6 +125,15 @@ removing repository"), which is the intended failure mode.
   (`cache-after-prepare`); later runs restore that image and go straight
   to building. The cached ports tree also pins one ports commit per
   round until the `prepare-epoch` line in the workflow is bumped.
+- poudriere's package directory is not in the VM at all. The runner
+  workspace is mounted into the VM over the host's kernel NFS server
+  (freebsd-vm's `sync: nfs` becomes anyvm's `sys-nfs` on Linux), and
+  `vm_build.sh` points `/usr/local/poudriere/data/packages` at
+  `work/pkgdata` on that mount. Before the VM starts, the runner seeds
+  that directory with every package already published, under the
+  original file names, so poudriere unqueues them instead of rebuilding;
+  and every package poudriere writes is on the runner the moment it
+  exists, even when the deadline watchdog interrupts the build.
 - Packages are renamed to GitHub-safe asset names and uploaded to numbered
   shard releases. GitHub allows at most 1000 assets per release, so a full
   package set needs about 40 shards.
@@ -128,6 +155,7 @@ removing repository"), which is the intended failure mode.
 | `scripts/ledger.py` | Build ledger: schema, merge, pending/done queries. |
 | `scripts/mkshards.py` | Runs inside the VM after the build: stages each touched shard flat, runs `pkg repo` on it (index + signature), writes the ledger and the consumer config. |
 | `scripts/publish.py` | Runs on the runner: fetches the ledger and open shard before the VM, uploads shard releases after. |
+| `scripts/seed.py` | Runs on the runner: copies the published packages into poudriere's package directory under their original names. |
 | `scripts/vm_build.sh` | Runs inside the VM: emulation, jail, poudriere. |
 | `tests/` | Unit tests for the four pure modules. |
 

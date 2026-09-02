@@ -106,6 +106,16 @@ jobs:
             --abi-slug "${{ inputs.abi_slug }}" \
             --workdir work \
             prepare --existing work/existing
+          # poudriere's package directory lives HERE on the runner (the VM
+          # symlinks its data/packages onto this NFS-mounted path). Seed
+          # it with everything already published, under the original file
+          # names and in poudriere's committed layout (.latest/All), so
+          # poudriere unqueues those instead of rebuilding them.
+          PYTHONPATH=scripts python3 scripts/seed.py \
+            --ledger   work/ledger.json \
+            --existing work/existing \
+            --dest     "work/pkgdata/packages/${{ steps.abi.outputs.jail }}-default"
+          chmod -R a+rwX work/pkgdata
 
       - name: Build the slice and stage the shards in a FreeBSD VM
         id: vm
@@ -124,6 +134,9 @@ jobs:
           BUILD_DEADLINE: ${{ inputs.deadline }}
           REPO: ${{ github.repository }}
           PKG_KEY_TYPE: ${{ env.PKG_KEY_TYPE }}
+          # Same absolute path inside the VM: freebsd-vm mounts the
+          # workspace at its runner path.
+          PKGDATA: ${{ github.workspace }}/work/pkgdata
         with:
           # Major-version prefix: freebsd-vm resolves it to the newest
           # matching release ("Only the leading, '.' separated part of it is
@@ -145,7 +158,7 @@ jobs:
           # values below are spelled out literally: with them only in envs,
           # every ABI would share one prepared image.
           cache-after-prepare: true
-          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE'
+          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE PKGDATA'
           prepare: |
             # cache key material -- abi=${{ inputs.abi_slug }} version=${{ steps.abi.outputs.version }} arch=${{ steps.abi.outputs.arch }} jail=${{ steps.abi.outputs.jail }}
             # prepare-epoch: 1  (bump to force a fresh jail and ports tree)
@@ -167,9 +180,9 @@ jobs:
             cp "${PKGLIST}" /root/build/slice.txt
             cd /root/build
             export SLICE_FILE=/root/build/slice.txt
+            WS="$(cd "$GITHUB_WORKSPACE" && pwd)"
             sh scripts/vm_build.sh
 
-            WS="$(cd "$GITHUB_WORKSPACE" && pwd)"
             # The public key is derived HERE, by pkg itself: for the ecc
             # signers it is a binary DER blob only pkg key can produce, and
             # this is also the exact bytes consumers put in pubkey:.
@@ -178,7 +191,8 @@ jobs:
             echo "repo.pub: $(wc -c < "$WS/work/repo.pub") bytes, sha256 $(sha256 -q "$WS/work/repo.pub")"
             PYTHONPATH=scripts python3 scripts/mkshards.py \
               --result   /root/build/out/result.json \
-              --packages /usr/local/poudriere/data/packages/${POUDRIERE_JAIL}-default/.latest/All \
+              --packages "${PKGDATA}/packages/${POUDRIERE_JAIL}-default/.latest/All" \
+              --packages "${PKGDATA}/packages/${POUDRIERE_JAIL}-default/.building/All" \
               --ledger   "$WS/work/ledger.json" \
               --existing "$WS/work/existing" \
               --key      "$WS/work/repo.key" \

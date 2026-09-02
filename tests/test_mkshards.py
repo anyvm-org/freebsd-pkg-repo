@@ -1,5 +1,7 @@
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(
@@ -37,6 +39,12 @@ class PlanFirstRunTest(unittest.TestCase):
         self.assertEqual(entry["state"], ledger.STATE_BUILT)
         self.assertEqual(entry["pkgfile"], "liblz4-1.10.0_2-1.pkg")
         self.assertEqual(entry["shard"], 0)
+
+    def test_ledger_keeps_the_original_file_name_too(self):
+        led = fresh(["archivers/liblz4"])
+        mkshards.plan(led, {"archivers/liblz4": "liblz4-1.10.0_2,1.pkg"}, NOW)
+        self.assertEqual(led["ports"]["archivers/liblz4"]["pkgfile_orig"],
+                         "liblz4-1.10.0_2,1.pkg")
 
     def test_unsafe_name_is_staged_under_its_safe_name(self):
         led = fresh(["archivers/liblz4"])
@@ -85,6 +93,42 @@ class PlanSecondRunTest(unittest.TestCase):
         self.assertEqual(plan[1]["new"], {"a-2.pkg": "a-2.pkg"})
         self.assertEqual(plan[1]["delete"], [])
         self.assertEqual(led["ports"]["a/a"]["shard"], 1)
+
+
+class FindPackageTest(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.committed = os.path.join(self.tmp, "latest", "All")
+        self.building = os.path.join(self.tmp, "building", "All")
+        os.makedirs(self.committed)
+        os.makedirs(self.building)
+        open(os.path.join(self.committed, "a-1.pkg"), "w").close()
+        open(os.path.join(self.building, "b-1.pkg"), "w").close()
+        open(os.path.join(self.building, "a-1.pkg"), "w").close()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_prefers_the_first_directory(self):
+        self.assertEqual(
+            mkshards.find_package([self.committed, self.building], "a-1.pkg"),
+            os.path.join(self.committed, "a-1.pkg"))
+
+    def test_falls_back_to_the_in_progress_directory(self):
+        self.assertEqual(
+            mkshards.find_package([self.committed, self.building], "b-1.pkg"),
+            os.path.join(self.building, "b-1.pkg"))
+
+    def test_missing_everywhere_is_none(self):
+        self.assertIsNone(
+            mkshards.find_package([self.committed, self.building], "c-1.pkg"))
+
+    def test_nonexistent_directory_is_skipped(self):
+        self.assertEqual(
+            mkshards.find_package([os.path.join(self.tmp, "nope"),
+                                   self.building], "b-1.pkg"),
+            os.path.join(self.building, "b-1.pkg"))
 
 
 class KeyArgumentTest(unittest.TestCase):
