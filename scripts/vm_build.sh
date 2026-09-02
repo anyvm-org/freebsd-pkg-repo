@@ -7,8 +7,12 @@ set -eu
 : "${ABI_SLUG:?ABI_SLUG is required}"
 : "${FBSD_VERSION:?FBSD_VERSION is required}"
 : "${POUDRIERE_ARCH:?POUDRIERE_ARCH is required}"
-: "${JAIL:?JAIL is required}"
+: "${POUDRIERE_JAIL:?POUDRIERE_JAIL is required}"
 : "${SLICE_FILE:?SLICE_FILE is required}"
+# Kept as a plain (unexported) shell variable on purpose: an exported JAIL
+# makes pkg jexec into that jail for every package script, which is how
+# the host's own "pkg install poudriere" failed its POST-INSTALL steps.
+JAIL="${POUDRIERE_JAIL}"
 BUILD_DEADLINE="${BUILD_DEADLINE:-16200}"
 PORTS_TREE="${PORTS_TREE:-default}"
 

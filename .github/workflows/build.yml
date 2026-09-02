@@ -105,7 +105,11 @@ jobs:
           TARGET_ABI: ${{ steps.abi.outputs.abi }}
           FBSD_VERSION: ${{ steps.abi.outputs.version }}
           POUDRIERE_ARCH: ${{ steps.abi.outputs.arch }}
-          JAIL: ${{ steps.abi.outputs.jail }}
+          # Not "JAIL": pkg treats a JAIL environment variable as "run my
+          # scripts inside that jail" and the host's own pkg install then
+          # fails every POST-INSTALL with 'jexec: jail "..." not found'.
+          # Same class of bug as ABI -> TARGET_ABI.
+          POUDRIERE_JAIL: ${{ steps.abi.outputs.jail }}
           PKGLIST: ${{ inputs.pkglist }}
           BUILD_DEADLINE: ${{ inputs.deadline }}
           REPO: ${{ github.repository }}
@@ -124,7 +128,7 @@ jobs:
           # runner (key, ledger, open-shard packages) is visible in the VM.
           sync: nfs
           copyback: true
-          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE'
+          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE'
           run: |
             set -eu
             # Run from a private copy, never off the live NFS mount: a
@@ -147,7 +151,7 @@ jobs:
             echo "repo.pub: $(wc -c < "$WS/work/repo.pub") bytes, sha256 $(sha256 -q "$WS/work/repo.pub")"
             PYTHONPATH=scripts python3 scripts/mkshards.py \
               --result   /root/build/out/result.json \
-              --packages /usr/local/poudriere/data/packages/${JAIL}-default/.latest/All \
+              --packages /usr/local/poudriere/data/packages/${POUDRIERE_JAIL}-default/.latest/All \
               --ledger   "$WS/work/ledger.json" \
               --existing "$WS/work/existing" \
               --key      "$WS/work/repo.key" \

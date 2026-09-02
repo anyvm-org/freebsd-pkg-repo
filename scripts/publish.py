@@ -20,6 +20,17 @@ import sys
 import shard
 
 
+INDEX_ASSETS = frozenset(("data.pkg", "packagesite.pkg", "meta", "meta.conf",
+                          "repo.pub"))
+
+
+def is_package_asset(name):
+    """True for a real package file, false for the repository's own index
+    files. "gh release download --pattern '*.pkg'" cannot tell them apart,
+    since data.pkg and packagesite.pkg end in .pkg too."""
+    return name.endswith(".pkg") and name not in INDEX_ASSETS
+
+
 def run(argv, check=True):
     return subprocess.run(argv, check=check, capture_output=True, text=True)
 
@@ -71,7 +82,7 @@ def cmd_prepare(args):
     dest = os.path.join(args.existing, tag)
     print("open shard is %s; fetching its packages" % tag)
     download_assets(args.repo, tag, "*.pkg", dest)
-    count = len([f for f in os.listdir(dest) if f.endswith(".pkg")])
+    count = len([f for f in os.listdir(dest) if is_package_asset(f)])
     print("fetched %d packages into %s" % (count, dest))
     return 0
 
