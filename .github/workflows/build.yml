@@ -99,6 +99,7 @@ jobs:
             prepare --existing work/existing
 
       - name: Build the slice and stage the shards in a FreeBSD VM
+        id: vm
         uses: vmactions/freebsd-vm@v1
         env:
           ABI_SLUG: ${{ inputs.abi_slug }}
@@ -128,7 +129,24 @@ jobs:
           # runner (key, ledger, open-shard packages) is visible in the VM.
           sync: nfs
           copyback: true
+          # The prepared image (poudriere, emulator, jail, ports tree) is
+          # cached after 'prepare' and restored on later runs, which then
+          # skip 'prepare' entirely. freebsd-vm keys that cache on
+          # sha256(prepare text + sync), NOT on the environment, so the ABI
+          # values below are spelled out literally: with them only in envs,
+          # every ABI would share one prepared image.
+          cache-after-prepare: true
           envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE'
+          prepare: |
+            # cache key material -- abi=${{ inputs.abi_slug }} version=${{ steps.abi.outputs.version }} arch=${{ steps.abi.outputs.arch }} jail=${{ steps.abi.outputs.jail }}
+            # prepare-epoch: 1  (bump to force a fresh jail and ports tree)
+            set -eu
+            mkdir -p /root/prep
+            tar -cf - scripts | tar -xf - -C /root/prep
+            export FBSD_VERSION='${{ steps.abi.outputs.version }}'
+            export POUDRIERE_ARCH='${{ steps.abi.outputs.arch }}'
+            export POUDRIERE_JAIL='${{ steps.abi.outputs.jail }}'
+            sh /root/prep/scripts/vm_prepare.sh
           run: |
             set -eu
             # Run from a private copy, never off the live NFS mount: a
@@ -176,6 +194,7 @@ jobs:
         if: always()
         run: |
           set -eux
+          echo "prepared-image cache hit: ${{ steps.vm.outputs.cache-after-prepare-hit }}"
           ls -la out || true
           ls -la out/shards/* || true
           cat out/result.json || true

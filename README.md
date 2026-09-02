@@ -102,6 +102,11 @@ removing repository"), which is the intended failure mode.
   poudriere cross-builds into a **riscv64** jail created from the official
   release sets. Emulating only the riscv64 user-mode instructions on a
   fast amd64 host is far cheaper than emulating a whole riscv64 machine.
+- The jail, the ports tree and the poudriere configuration are made once
+  in freebsd-vm's `prepare` step and cached with the VM image
+  (`cache-after-prepare`); later runs restore that image and go straight
+  to building. The cached ports tree also pins one ports commit per
+  round until the `prepare-epoch` line in the workflow is bumped.
 - Packages are renamed to GitHub-safe asset names and uploaded to numbered
   shard releases. GitHub allows at most 1000 assets per release, so a full
   package set needs about 40 shards.
