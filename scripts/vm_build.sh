@@ -120,6 +120,24 @@ QEMU_MAX_EXECUTION_TIME=7200
 QEMU_NOHANG_TIME=1800
 CONF
 
+# Per-port make.conf, read by poudriere for every build in every jail.
+#
+# lang/python3* passes COMPILEALL_OPTS=-j${MAKE_JOBS_NUMBER} to Python's
+# own install step; with N > 1 compileall uses multiprocessing, whose
+# semaphores misbehave under qemu-user ("semaphore or lock released too
+# many times", "EOFError: Ran out of input"). The port ignores that error,
+# so the failure only surfaces in the package phase as hundreds of
+# "Unable to access file ...__pycache__/*.pyc" and takes every dependent
+# port down with it (66 of 115 in the first bootstrap run, 2026-09-02).
+# MAKE_JOBS_UNSAFE forces MAKE_JOBS_NUMBER=1 for those ports only, which
+# makes compileall single-process. It built cleanly that way.
+mkdir -p /usr/local/etc/poudriere.d
+cat > /usr/local/etc/poudriere.d/make.conf <<'MK'
+.if ${.CURDIR:M*/lang/python3*}
+MAKE_JOBS_UNSAFE=yes
+.endif
+MK
+
 # ---------------------------------------------------------------------
 # Jail from the official riscv64 release sets. download.freebsd.org and
 # archive.freebsd.org are NOT sync-locked, so probe and fall back rather
@@ -273,6 +291,22 @@ print(json.dumps(dict((k, len(v)) for k, v in result.items())))
 PYEOF
 
 echo "result manifest written to ${OUTDIR}/result.json"
+
+# Keep the per-port logs of everything that FAILED. poudriere symlinks them
+# under logs/errors/; -L copies the real files. Without this a failure on
+# CI leaves only the one-line summary, and the runner is gone before
+# anyone can look (lang/python312 "Failed: package", 2026-09-02, took 66
+# dependents down with it and no log survived the first time).
+if [ -d "${LOGDIR}/logs/errors" ]; then
+    mkdir -p "${OUTDIR}/faillogs"
+    cp -RL "${LOGDIR}/logs/errors/." "${OUTDIR}/faillogs/" 2>/dev/null || true
+    echo "failed-port logs kept: $(ls "${OUTDIR}/faillogs" 2>/dev/null | wc -l | tr -d ' ')"
+    for f in "${OUTDIR}"/faillogs/*.log; do
+        [ -f "$f" ] || continue
+        echo "--- $(basename "$f"): last lines ---"
+        tail -n 25 "$f"
+    done
+fi
 
 # ---------------------------------------------------------------------
 # Package directory, and an UNSIGNED index so the first CI run reveals

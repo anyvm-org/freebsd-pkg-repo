@@ -143,6 +143,13 @@ Design and plan live in the
 These packages are unofficial and community-built. They are not produced,
 reviewed or endorsed by the FreeBSD Project.
 
+powerpc64 is listed in `config/abis` but blocked: pkg.freebsd.org has no
+powerpc64 packages either, yet the `qemu-user-static` FreeBSD 15 ships
+(3.1.0) aborts on every FreeBSD 15 powerpc64 binary, the newer
+`qemu-user-static-devel` has no package on 15, and a native powerpc64
+guest under QEMU is limited to one emulated CPU. It is parked, not
+forgotten.
+
 Only `FreeBSD:15:riscv64` exists so far. FreeBSD 13.x and 14.x images
 have not been tested; the `pkg` they ship may predate ECDSA signature
 verification, in which case they will need the manual `pkg-static add`

@@ -165,7 +165,12 @@ jobs:
               --now      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --out      "$WS/out"
             cp /root/build/out/result.json /root/build/out/build_seconds "$WS/out/" 2>/dev/null || true
-            ls -la "$WS/out" "$WS/out/shards" || true
+            # logs of failed ports, for diagnosis after the runner is gone
+            if [ -d /root/build/out/faillogs ]; then
+              mkdir -p "$WS/out/faillogs"
+              cp /root/build/out/faillogs/* "$WS/out/faillogs/" 2>/dev/null || true
+            fi
+            ls -la "$WS/out" "$WS/out/shards" "$WS/out/faillogs" 2>/dev/null || true
 
       - name: Show what came back
         if: always()
@@ -196,4 +201,5 @@ jobs:
             out/ledger.json
             out/anyvm.conf
             out/upload.json
+            out/faillogs/
           if-no-files-found: warn
