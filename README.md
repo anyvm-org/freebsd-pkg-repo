@@ -20,6 +20,25 @@ implementation plan are committed; the first build has not produced a
 usable repository. This README will carry the consumer configuration, the
 public key and the measured build numbers once it does.
 
+## Signing key
+
+Every shard release and the index release carry `repo.pub`, the public
+half of the repository signing key. It is an ECDSA key created with
+`pkg key --create -t ecdsa`, so it is a binary DER file, not PEM; pkg's
+ECDSA/EdDSA signers accept only keys made by `pkg key`, not by OpenSSL.
+
+SHA-256 of `repo.pub`:
+
+```
+a9e2f84083b916f0f9f2bda18ebf9cc581cfb28aaadb6827836f1ddc672a3040
+```
+
+Check a downloaded copy with `sha256 repo.pub` (FreeBSD) or
+`sha256sum repo.pub` (Linux) before installing it as
+`/usr/local/etc/pkg/keys/anyvm.pub`. A signed index that does not verify
+against this key is rejected by pkg outright ("Invalid signature,
+removing repository"), which is the intended failure mode.
+
 ## How it works
 
 - A GitHub Actions job starts a FreeBSD **amd64** VM via

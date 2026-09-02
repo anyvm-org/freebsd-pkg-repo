@@ -1,8 +1,1 @@
-net/rsync
-sysutils/fusefs-sshfs
-shells/bash
-security/sudo
-ftp/curl
-devel/git
-lang/python3
 sysutils/tree
