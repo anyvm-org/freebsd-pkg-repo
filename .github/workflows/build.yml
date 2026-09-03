@@ -383,9 +383,14 @@ jobs:
           envs: 'ABI_SLUG TARGET_ABI REPO PKGLIST PKG_KEY_TYPE'
           run: |
             set -eu
-            # pkg repo / pkg key need the full pkg, not just pkg-static.
-            env ASSUME_ALWAYS_YES=yes pkg bootstrap -f >/dev/null 2>&1 || true
-            pkg -v
+            # This VM never ran 'prepare', so it has neither python3 nor
+            # a full pkg (round 2's merge died with "ssh exited with code
+            # 127": python3 not found). pkg bootstraps itself on first use.
+            n=0
+            until env ASSUME_ALWAYS_YES=yes pkg install -y python3; do
+              n=$((n + 1)); [ "$n" -ge 5 ] && exit 1; sleep 15
+            done
+            pkg -v; python3 --version
             rm -rf /root/merge
             mkdir -p /root/merge
             tar -cf - scripts config | tar -xf - -C /root/merge
