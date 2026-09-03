@@ -28,6 +28,7 @@ def merge_results(results):
     failed = set()
     ignored = set()
     oversize = {}
+    interrupted = set()
     for name, result in results:
         for origin, pkgfile in sorted(result.get("built", {}).items()):
             if origin in built:
@@ -38,10 +39,16 @@ def merge_results(results):
         failed.update(result.get("failed", []))
         ignored.update(result.get("ignored", []))
         oversize.update(result.get("oversize", {}))
+        interrupted.update(result.get("interrupted", []))
     failed = sorted(o for o in failed if o not in built)
     ignored = sorted(o for o in ignored if o not in built)
+    oversize = dict((o, r) for o, r in oversize.items() if o not in built)
+    # Interrupted in one job but built or timed out in another: the
+    # definite outcome wins.
+    interrupted = sorted(o for o in interrupted
+                         if o not in built and o not in oversize)
     merged = {"built": built, "failed": failed, "ignored": ignored,
-              "oversize": oversize}
+              "oversize": oversize, "interrupted": interrupted}
     return merged, supplier
 
 

@@ -13,6 +13,7 @@ STATE_IGNORED = "ignored"
 STATE_OVERSIZE = "oversize"
 
 MAX_FAILURES = 3
+MAX_INTERRUPTIONS = 2
 
 LEDGER_VERSION = 1
 
@@ -135,6 +136,16 @@ def merge_result(led, result, now, listed=None):
         _entry(ports, key(origin))["state"] = STATE_IGNORED
     for origin in result.get("oversize", {}):
         _entry(ports, key(origin))["state"] = STATE_OVERSIZE
+    # A build the job's deadline cut short. Once may be bad luck (the
+    # port started late in the job); twice means it does not fit the
+    # machine, and retrying would burn a whole job every round.
+    for origin in result.get("interrupted", []):
+        entry = _entry(ports, key(origin))
+        if entry["state"] != STATE_PENDING:
+            continue
+        entry["interrupt_count"] = entry.get("interrupt_count", 0) + 1
+        if entry["interrupt_count"] >= MAX_INTERRUPTIONS:
+            entry["state"] = STATE_OVERSIZE
     return led
 
 

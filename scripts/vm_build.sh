@@ -82,6 +82,17 @@ if [ -n "${PKGDATA:-}" ]; then
     sed -i '' '/^BUILD_AS_NON_ROOT=/d' /usr/local/etc/poudriere.conf
     printf '\nBUILD_AS_NON_ROOT=no\n' >> /usr/local/etc/poudriere.conf
     echo "BUILD_AS_NON_ROOT=no (packages on a root-squashed NFS export)"
+    # One phase may use nearly the whole job. The prepared image says
+    # QEMU_MAX_EXECUTION_TIME=7200, which on the 4-core runner under
+    # emulation fails binutils, icu and geos with "build/timeout" (run
+    # 33765900942) -- ports that hundreds of others need. The deadline
+    # watchdog still bounds the job; a port that cannot finish inside it
+    # is recorded as oversize below, not as a failure.
+    PHASE_LIMIT=$(( BUILD_DEADLINE - 600 ))
+    [ "${PHASE_LIMIT}" -gt 7200 ] || PHASE_LIMIT=7200
+    sed -i '' -e '/^QEMU_MAX_EXECUTION_TIME=/d' -e '/^QEMU_NOHANG_TIME=/d' /usr/local/etc/poudriere.conf
+    printf 'QEMU_MAX_EXECUTION_TIME=%s\nQEMU_NOHANG_TIME=%s\n' "${PHASE_LIMIT}" "${PHASE_LIMIT}" >> /usr/local/etc/poudriere.conf
+    echo "QEMU_MAX_EXECUTION_TIME=${PHASE_LIMIT} (from BUILD_DEADLINE=${BUILD_DEADLINE})"
     echo "seeded packages: $(ls "${PKGDATA}/packages/${JAIL}-${PORTS_TREE}/.latest/All" 2>/dev/null | wc -l | tr -d ' ')"
 fi
 
@@ -266,11 +277,52 @@ for origin, cause in column("skipped", 2):
     if cause in ignored_pkgnames and origin not in built:
         ignored.append(origin)
 
+# ports.failed: originspec pkgname phase errortype elapsed (common.sh
+# 6935). A "timeout" is the phase limit on this runner, not a broken
+# port: binutils, icu and geos hit it in run 33765900942 and would have
+# been retired as failed after MAX_FAILURES while hundreds of ports wait
+# on them. They are oversize for this machine, to be built on a bigger
+# one, and the ledger keeps them out of the CI slices.
+failed = []
+oversize = {}
+for origin, errortype in column("failed", 3):
+    if errortype == "timeout":
+        oversize[origin] = "timeout on the CI runner"
+    else:
+        failed.append(origin)
+
+# A port whose build the deadline watchdog interrupted has a per-port
+# log with a "=>> Building" header and no "ended at" footer. Left alone
+# it is retried every round, burns the whole job each time and never
+# finishes; the ledger counts these and moves a port to oversize after
+# the second interruption.
+interrupted = []
+logs_dir = os.path.join(logdir, "logs")
+if os.path.isdir(logs_dir):
+    for name in sorted(os.listdir(logs_dir)):
+        if not name.endswith(".log"):
+            continue
+        path = os.path.join(logs_dir, name)
+        if os.path.islink(path) or not os.path.isfile(path):
+            continue
+        with open(path, errors="replace") as handle:
+            first = handle.readline().strip()
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - 4096))
+            tail = handle.read()
+        if first.startswith("=>> Building ") and " ended at" not in tail:
+            origin = first[len("=>> Building "):].strip()
+            if origin and origin not in built and origin not in failed \
+                    and origin not in oversize:
+                interrupted.append(origin)
+
 result = {
     "built": built,
-    "failed": [origin for origin, _ in column("failed", 1)],
+    "failed": failed,
     "ignored": sorted(set(ignored)),
-    "oversize": {},
+    "oversize": oversize,
+    "interrupted": sorted(set(interrupted)),
 }
 with open(out, "w") as handle:
     json.dump(result, handle, indent=2, sort_keys=True)

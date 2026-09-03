@@ -41,8 +41,17 @@ class MergeTest(unittest.TestCase):
     def test_empty_input(self):
         merged, supplier = merge.merge_results([])
         self.assertEqual(merged, {"built": {}, "failed": [], "ignored": [],
-                                  "oversize": {}})
+                                  "oversize": {}, "interrupted": []})
         self.assertEqual(supplier, {})
+
+    def test_interrupted_yields_to_built_or_oversize_elsewhere(self):
+        merged, _ = merge.merge_results([
+            ("build-0", {"interrupted": ["devel/icu", "math/gmp", "x/y"]}),
+            ("build-1", {"built": {"math/gmp": "gmp-6.3.0.pkg"},
+                         "oversize": {"devel/icu": "timeout on the CI runner"}}),
+        ])
+        self.assertEqual(merged["interrupted"], ["x/y"])
+        self.assertEqual(list(merged["oversize"]), ["devel/icu"])
 
 
 if __name__ == "__main__":

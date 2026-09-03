@@ -172,6 +172,33 @@ class MarkIgnoredTest(unittest.TestCase):
         self.assertEqual(led["ports"]["devel/llvm20"]["state"], "built")
 
 
+class InterruptedTest(unittest.TestCase):
+
+    def test_one_interruption_keeps_the_port_pending(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["devel/icu"])
+        ledger.merge_result(led, {"interrupted": ["devel/icu"]}, NOW)
+        self.assertEqual(led["ports"]["devel/icu"]["state"], "pending")
+        self.assertEqual(led["ports"]["devel/icu"]["interrupt_count"], 1)
+
+    def test_second_interruption_makes_it_oversize(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["devel/icu"])
+        for _ in range(ledger.MAX_INTERRUPTIONS):
+            ledger.merge_result(led, {"interrupted": ["devel/icu"]}, NOW)
+        self.assertEqual(led["ports"]["devel/icu"]["state"], "oversize")
+        self.assertEqual(ledger.pending_origins(led), [])
+
+    def test_a_built_port_is_not_touched(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["devel/icu"])
+        ledger.merge_result(led, {"built": {"devel/icu": "icu-76.1,1.pkg"}}, NOW)
+        ledger.merge_result(led, {"interrupted": ["devel/icu"]}, NOW)
+        self.assertEqual(led["ports"]["devel/icu"]["state"], "built")
+
+    def test_timeout_reported_as_oversize_leaves_the_queue(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["devel/icu"])
+        ledger.merge_result(led, {"oversize": {"devel/icu": "timeout on the CI runner"}}, NOW)
+        self.assertEqual(led["ports"]["devel/icu"]["state"], "oversize")
+
+
 class DoneTest(unittest.TestCase):
 
     def test_not_done_while_anything_pends(self):

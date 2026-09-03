@@ -19,9 +19,9 @@ on:
         required: false
         default: '18'
       deadline:
-        description: 'poudriere bulk wall-clock budget per job, seconds'
+        description: 'poudriere bulk wall-clock budget per job, seconds (job limit is 6 h; setup and collection take ~15 min)'
         required: false
-        default: '16200'
+        default: '18000'
 
 # One round per ABI at a time. The merge job rewrites the ledger and the
 # open shard's index from the ledger the round fetched at ITS start, so

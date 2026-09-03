@@ -254,12 +254,15 @@ def main(argv=None):
         "ignored": [ledger.canonical_origin(listed, o) for o in result.get("ignored", [])],
         "oversize": dict((ledger.canonical_origin(listed, o), v)
                          for o, v in result.get("oversize", {}).items()),
+        "interrupted": [ledger.canonical_origin(listed, o)
+                        for o in result.get("interrupted", [])],
     }
 
     # failures / ignores / oversize first, then the built set via plan()
     ledger.merge_result(led, {"failed": result["failed"],
                               "ignored": result["ignored"],
-                              "oversize": result["oversize"]},
+                              "oversize": result["oversize"],
+                              "interrupted": result["interrupted"]},
                         args.now)
 
     os.makedirs(args.out, exist_ok=True)
