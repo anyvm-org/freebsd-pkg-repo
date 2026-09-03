@@ -17,7 +17,7 @@ on:
       slices:
         description: 'Parallel build jobs; pending origins are hashed into this many slices'
         required: false
-        default: '16'
+        default: '18'
       deadline:
         description: 'poudriere bulk wall-clock budget per job, seconds'
         required: false
