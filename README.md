@@ -15,12 +15,16 @@ them as GitHub Release assets.
 
 ## Status
 
-**Pilot published on 2026-09-02.** Shard `pkg-FreeBSD-15-riscv64-000`
-holds `pkg`, `tree` and tree's three build dependencies, signed with the
-ECDSA key below, and a real FreeBSD 15.1 riscv64 guest installs from it.
-The next slice is `config/pkglist.bootstrap` (rsync, sshfs, bash, sudo,
-curl, git, python3), the set that gives the riscv64 anyvm images their
-`rsync` and `sshfs` back.
+**Bootstrap slice published on 2026-09-03.** Shard
+`pkg-FreeBSD-15-riscv64-000` holds the 115 packages of
+`config/pkglist.bootstrap` and its closure: `pkg`, `rsync`, `sshfs`,
+`bash`, `sudo`, `curl`, `git`, `python3` (3.12), `tree`, plus
+everything they pull in (perl, ruby, cmake, glib, ...), signed with the
+ECDSA key below. A real FreeBSD 15.1 riscv64 guest verifies the
+signature with its shipped `pkg`, upgrades `pkg` from the shard and
+installs `rsync` from it. The slice took four resumed 4.5-hour jobs on
+the 4-core runner; every job seeded what the previous ones published
+and built only what was missing.
 
 ## Installing
 
