@@ -1,0 +1,57 @@
+# Ports poudriere must not build on the 4-core GitHub runner: under
+# qemu-user each of these needs far more than the 6-hour job limit and
+# would burn three full jobs (MAX_FAILURES) before the ledger retires it.
+# Build them on a big machine and publish through the same pipeline.
+# Format: poudriere blacklist (one origin per line, # comments); copied
+# to /usr/local/etc/poudriere.d/blacklist by vm_build.sh.
+devel/llvm
+devel/llvm-devel
+devel/llvm-cheri
+devel/llvm-cheriot
+devel/llvm-morello
+devel/llvm12
+devel/llvm13
+devel/llvm14
+devel/llvm15
+devel/llvm16
+devel/llvm17
+devel/llvm18
+devel/llvm19
+devel/llvm20
+devel/llvm21
+devel/llvm22
+devel/llvm23
+lang/gcc
+lang/gcc12
+lang/gcc12-devel
+lang/gcc13
+lang/gcc13-devel
+lang/gcc14
+lang/gcc14-devel
+lang/gcc15
+lang/gcc15-devel
+lang/gcc16
+lang/gcc16-devel
+lang/gcc17-devel
+lang/gcc6-aux
+lang/ghc
+lang/ghc96
+lang/ghc98
+lang/ghc910
+lang/go
+lang/go125
+lang/go126
+lang/go127
+java/openjdk8
+java/openjdk8-jre
+java/openjdk11
+java/openjdk11-jre
+java/openjdk17
+java/openjdk17-jre
+java/openjdk21
+java/openjdk21-jre
+java/openjdk25
+java/openjdk26
+editors/libreoffice
+databases/mongodb70
+databases/mongodb80

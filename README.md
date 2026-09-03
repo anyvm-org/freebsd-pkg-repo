@@ -149,9 +149,29 @@ removing repository"), which is the intended failure mode.
   guest's root to the runner's uid, so poudriere builds as root
   (`BUILD_AS_NON_ROOT=no`); as `nobody` the package phase cannot write
   its staging directory on that mount.
+- A round is one workflow run in three stages. `plan` fetches the ledger,
+  queues the requested origins (`config/pkglist.all` is the whole tree:
+  the 30,742 originspecs a `poudriere bulk -a -n` dry run on riscv64
+  leaves after IGNORED and skipped ports) and hashes everything still
+  pending into K slices. `build` runs K jobs in parallel, one slice each,
+  for up to 4.5 hours. `merge` unions their results, signs the touched
+  shards in a short FreeBSD VM and publishes them once. Rounds repeat
+  until nothing is pending.
+- A build job seeds itself instead of downloading the repository: it
+  dry-runs its slice (`poudriere bulk -n`), which lists the slice plus
+  its whole dependency closure; every published package in that list is
+  fetched from its shard release into poudriere's package directory, and
+  the real build then unqueues those and builds only what nobody has
+  built yet. Two jobs may still build the same not-yet-published
+  dependency in one round; `merge` keeps one copy.
+- `config/blacklist` keeps the runners off ports that cannot finish in a
+  6-hour job under emulation (llvm, gcc, openjdk, ghc, go, libreoffice,
+  mongodb). Those are built on a bigger machine and published through
+  the same path. `lang/rust` refuses to build under qemu-user on its
+  own, which takes every rust consumer out of scope.
 - Packages are renamed to GitHub-safe asset names and uploaded to numbered
   shard releases. GitHub allows at most 1000 assets per release, so a full
-  package set needs about 40 shards.
+  package set needs about 35 shards.
 - The index release holds `meta.conf`, `packagesite.pkg`, `data.pkg` and
   `ledger.json`. Every `repopath` in the manifest is rewritten to
   `../<shard-tag>/<asset>`, which pkg pastes onto the repository URL
@@ -168,10 +188,15 @@ removing repository"), which is the intended failure mode.
 | `scripts/sanitize.py` | Package filename to GitHub-safe asset name. |
 | `scripts/shard.py` | Permanent assignment of assets to shard releases. |
 | `scripts/ledger.py` | Build ledger: schema, merge, pending/done queries. |
-| `scripts/mkshards.py` | Runs inside the VM after the build: stages each touched shard flat, runs `pkg repo` on it (index + signature), writes the ledger and the consumer config. |
-| `scripts/publish.py` | Runs on the runner: fetches the ledger and open shard before the VM, uploads shard releases after. |
-| `scripts/seed.py` | Runs on the runner: copies the published packages into poudriere's package directory under their original names. |
-| `scripts/vm_build.sh` | Runs inside the VM: emulation, jail, poudriere. |
+| `scripts/slice.py` | Hashes the pending origins into K stable slices, one per parallel job. |
+| `scripts/wantlist.py` | Turns a slice's dry-run queue into the list of published packages to fetch before building. |
+| `scripts/merge.py` | Unions the K jobs' result manifests; first job wins a duplicate dependency. |
+| `scripts/mkshards.py` | Runs in the merge VM: stages each touched shard flat, runs `pkg repo` on it (index + signature), writes the ledger and the consumer config. |
+| `scripts/publish.py` | Runs on the runner: fetches the ledger and open shard before signing, uploads shard releases after. |
+| `scripts/seed.py` | Seeds poudriere's package directory from already-downloaded packages (single-job and local use; the matrix jobs seed themselves through `wantlist.py`). |
+| `scripts/vm_build.sh` | Runs inside the build VM: emulation, jail, blacklist, selective seed, poudriere. |
+| `config/blacklist` | Ports the runners never attempt. |
+| `config/pkglist.all` | The whole tree for riscv64, as poudriere's dry run queued it. |
 | `tests/` | Unit tests for the four pure modules. |
 
 ## Development
