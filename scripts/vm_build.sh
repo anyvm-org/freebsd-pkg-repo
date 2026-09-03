@@ -255,10 +255,21 @@ built = {}
 for origin, pkgname in column("built", 1):
     built[origin] = pkgname + ".pkg"
 
+ignored = [origin for origin, _ in column("ignored", 1)]
+# A port skipped because an IGNORED port (not a failed one) is in its
+# dependency chain will be skipped every round for as long as that
+# port stays ignored; record it as ignored too, or it pends forever and
+# every round's dry run re-derives the same skip. The third column is
+# the root cause's package name (common.sh clean_pool).
+ignored_pkgnames = set(pkgname for _, pkgname in column("ignored", 1))
+for origin, cause in column("skipped", 2):
+    if cause in ignored_pkgnames and origin not in built:
+        ignored.append(origin)
+
 result = {
     "built": built,
     "failed": [origin for origin, _ in column("failed", 1)],
-    "ignored": [origin for origin, _ in column("ignored", 1)],
+    "ignored": sorted(set(ignored)),
     "oversize": {},
 }
 with open(out, "w") as handle:
