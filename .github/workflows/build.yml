@@ -11,19 +11,22 @@ on:
         required: false
         default: 'FreeBSD-15-riscv64'
       pkglist:
-        description: 'Port list file to build'
+        description: 'Origins to build (config/pkglist.all = whole tree)'
         required: false
-        default: 'config/pkglist'
+        default: 'config/pkglist.all'
+      slices:
+        description: 'Parallel build jobs; pending origins are hashed into this many slices'
+        required: false
+        default: '16'
       deadline:
-        description: 'poudriere bulk wall-clock budget, seconds'
+        description: 'poudriere bulk wall-clock budget per job, seconds'
         required: false
         default: '16200'
 
-# One build per ABI at a time. Every run regenerates the open shard's index
-# and rewrites ledger.json from the ledger it fetched at ITS start, so two
-# concurrent runs on the same ABI end with the last finisher's ledger
-# overwriting the other's built set (assets survive, the record does not).
-# Queue instead of cancelling: a queued run simply sees the newer ledger.
+# One round per ABI at a time. The merge job rewrites the ledger and the
+# open shard's index from the ledger the round fetched at ITS start, so
+# two concurrent rounds on the same ABI would end with the last finisher
+# overwriting the other's record. Queue instead of cancelling.
 concurrency:
   group: build-${{ inputs.abi_slug }}
   cancel-in-progress: false
@@ -34,21 +37,21 @@ env:
   PKG_KEY_TYPE: ecdsa
 
 jobs:
-  build:
+  # ---------------------------------------------------------------------
+  # plan: one small job. Fetches the ledger, queues the requested origins
+  # into it, and hashes everything still pending into K slice files.
+  # ---------------------------------------------------------------------
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 15
+    outputs:
+      indices: ${{ steps.slices.outputs.indices }}
+      version: ${{ steps.abi.outputs.version }}
+      arch: ${{ steps.abi.outputs.arch }}
+      jail: ${{ steps.abi.outputs.jail }}
+      abi: ${{ steps.abi.outputs.abi }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Free up runner disk
-        run: |
-          set -eux
-          df -h /
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          df -h /
 
       - name: Read the ABI row
         id: abi
@@ -67,18 +70,246 @@ jobs:
           echo "abi=FreeBSD:${major}:$(echo "$row" | awk '{print $3}' | cut -d. -f2)" >> "$GITHUB_OUTPUT"
           echo "resolved: $row"
 
+      - name: Fetch the ledger, queue the origins, cut the slices
+        id: slices
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p work/slices
+          # The ledger lives on the index release; a missing one means a
+          # brand-new ABI and starts empty.
+          gh release download 'idx-${{ inputs.abi_slug }}' \
+            --repo '${{ github.repository }}' -p ledger.json -D work --clobber \
+            || echo "no ledger yet for ${{ inputs.abi_slug }}"
+          PYTHONPATH=scripts python3 - <<'PY'
+          import json, os
+          import ledger
+          path = "work/ledger.json"
+          origins = [l.strip() for l in open("${{ inputs.pkglist }}")
+                     if l.strip() and not l.startswith("#")]
+          if os.path.isfile(path):
+              led = json.load(open(path))
+              added = ledger.add_origins(led, origins)
+          else:
+              led = ledger.new_ledger("${{ steps.abi.outputs.abi }}", "unknown", origins)
+              added = origins
+          ledger.resolve_flavors(led)
+          json.dump(led, open(path, "w"), indent=2, sort_keys=True)
+          pend = ledger.pending_origins(led)
+          print("ledger: %d entries, %d queued from the list, %d pending"
+                % (len(led["ports"]), len(added), len(pend)))
+          PY
+          K='${{ inputs.slices }}'
+          PYTHONPATH=scripts python3 scripts/slice.py --ledger work/ledger.json --slices "$K" --count
+          i=0
+          while [ "$i" -lt "$K" ]; do
+            PYTHONPATH=scripts python3 scripts/slice.py --ledger work/ledger.json \
+              --slices "$K" --index "$i" --out "work/slices/slice-$i.txt" >/dev/null
+            i=$((i + 1))
+          done
+          # Only slices with something to do become jobs.
+          indices=$(i=0; while [ "$i" -lt "$K" ]; do
+                      [ -s "work/slices/slice-$i.txt" ] && printf '%s\n' "$i"; i=$((i + 1)); done \
+                    | python3 -c 'import json,sys; print(json.dumps([int(x) for x in sys.stdin.read().split()]))')
+          echo "indices=$indices" >> "$GITHUB_OUTPUT"
+          echo "slices with work: $indices"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: plan-${{ inputs.abi_slug }}
+          path: |
+            work/ledger.json
+            work/slices/
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------
+  # build: K jobs in parallel, one slice each. Every job seeds itself with
+  # the published packages its slice's closure needs (dry run first), so
+  # it builds only what nobody has built yet. Packages are written to the
+  # runner over NFS and shipped as an artifact; nothing is published here.
+  # ---------------------------------------------------------------------
+  build:
+    needs: plan
+    if: needs.plan.outputs.indices != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      # GitHub's own ceiling for a free account is 20 concurrent jobs.
+      max-parallel: 20
+      matrix:
+        index: ${{ fromJSON(needs.plan.outputs.indices) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Free up runner disk
+        run: |
+          set -eux
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: plan-${{ inputs.abi_slug }}
+          path: work
+
+      - name: Show the slice
+        run: |
+          set -eu
+          mkdir -p work/pkgdata
+          chmod -R a+rwX work/pkgdata
+          echo "slice ${{ matrix.index }}: $(wc -l < work/slices/slice-${{ matrix.index }}.txt) origins"
+          head -20 "work/slices/slice-${{ matrix.index }}.txt"
+
+      - name: Build the slice in a FreeBSD VM
+        id: vm
+        uses: vmactions/freebsd-vm@v1
+        env:
+          ABI_SLUG: ${{ inputs.abi_slug }}
+          TARGET_ABI: ${{ needs.plan.outputs.abi }}
+          FBSD_VERSION: ${{ needs.plan.outputs.version }}
+          POUDRIERE_ARCH: ${{ needs.plan.outputs.arch }}
+          # Not "JAIL": pkg treats a JAIL environment variable as "run my
+          # scripts inside that jail" and the host's own pkg install then
+          # fails every POST-INSTALL with 'jexec: jail "..." not found'.
+          # Same class of bug as ABI -> TARGET_ABI.
+          POUDRIERE_JAIL: ${{ needs.plan.outputs.jail }}
+          SLICE_INDEX: ${{ matrix.index }}
+          BUILD_DEADLINE: ${{ inputs.deadline }}
+          REPO: ${{ github.repository }}
+          # Same absolute paths inside the VM: freebsd-vm mounts the
+          # workspace at its runner path.
+          PKGDATA: ${{ github.workspace }}/work/pkgdata
+          LEDGER: ${{ github.workspace }}/work/ledger.json
+          BLACKLIST: ${{ github.workspace }}/config/blacklist
+        with:
+          # Major-version prefix: freebsd-vm resolves it to the newest
+          # matching release ("Only the leading, '.' separated part of it is
+          # enough" -- action.yml). This is the amd64 BUILD host only; the
+          # riscv64 target version is pinned in config/abis, because
+          # poudriere needs a concrete base.txz URL.
+          release: '15'
+          mem: 12288
+          cpu: 4
+          # NFS: the workspace is mounted live; work/pkgdata written by
+          # poudriere in the VM is on the runner the moment it exists.
+          sync: nfs
+          copyback: true
+          # The prepared image (poudriere, emulator, jail, ports tree) is
+          # cached after 'prepare' and restored on later runs, which then
+          # skip 'prepare' entirely. freebsd-vm keys that cache on
+          # sha256(prepare text + sync), NOT on the environment, so the ABI
+          # values below are spelled out literally: with them only in envs,
+          # every ABI would share one prepared image.
+          cache-after-prepare: true
+          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL SLICE_INDEX BUILD_DEADLINE REPO PKGDATA LEDGER BLACKLIST'
+          prepare: |
+            # cache key material -- abi=${{ inputs.abi_slug }} version=${{ needs.plan.outputs.version }} arch=${{ needs.plan.outputs.arch }} jail=${{ needs.plan.outputs.jail }}
+            # prepare-epoch: 1  (bump to force a fresh jail and ports tree)
+            set -eu
+            mkdir -p /root/prep
+            tar -cf - scripts | tar -xf - -C /root/prep
+            export FBSD_VERSION='${{ needs.plan.outputs.version }}'
+            export POUDRIERE_ARCH='${{ needs.plan.outputs.arch }}'
+            export POUDRIERE_JAIL='${{ needs.plan.outputs.jail }}'
+            sh /root/prep/scripts/vm_prepare.sh
+          run: |
+            set -eu
+            # Run from a private copy, never off the live NFS mount: a
+            # host-side edit while sh is reading a script shifts the byte
+            # offsets it executes from.
+            rm -rf /root/build
+            mkdir -p /root/build
+            tar -cf - scripts config | tar -xf - -C /root/build
+            WS="$(cd "$GITHUB_WORKSPACE" && pwd)"
+            cp "$WS/work/slices/slice-${SLICE_INDEX}.txt" /root/build/slice.txt
+            cd /root/build
+            export SLICE_FILE=/root/build/slice.txt
+            sh scripts/vm_build.sh
+            mkdir -p "$WS/out"
+            cp /root/build/out/result.json /root/build/out/build_seconds /root/build/out/ports_commit "$WS/out/" 2>/dev/null || true
+            cp /root/build/out/wantlist.txt /root/build/out/dryrun.log "$WS/out/" 2>/dev/null || true
+            if [ -d /root/build/out/faillogs ]; then
+              mkdir -p "$WS/out/faillogs"
+              cp /root/build/out/faillogs/* "$WS/out/faillogs/" 2>/dev/null || true
+            fi
+
+      # The packages this job built are on the runner already (NFS);
+      # ship exactly the files result.json names, nothing seeded.
+      - name: Collect the packages this job built
+        if: always()
+        run: |
+          set -eu
+          mkdir -p out/pkgs
+          test -f out/result.json || { echo "no result.json (VM step failed before building)"; exit 0; }
+          python3 - <<'PY'
+          import json, os, shutil
+          jail = "${{ needs.plan.outputs.jail }}"
+          root = "work/pkgdata/packages/%s-default" % jail
+          dirs = [os.path.join(root, ".building", "All"), os.path.join(root, ".latest", "All")]
+          result = json.load(open("out/result.json"))
+          copied = missing = 0
+          for origin, pkgfile in sorted(result.get("built", {}).items()):
+              for d in dirs:
+                  src = os.path.join(d, pkgfile)
+                  if os.path.isfile(src):
+                      shutil.copyfile(src, os.path.join("out/pkgs", pkgfile))
+                      copied += 1
+                      break
+              else:
+                  missing += 1
+                  print("missing built package:", origin, pkgfile)
+          print("collected %d package files (%d missing)" % (copied, missing))
+          PY
+          du -sh out/pkgs
+          cat out/result.json | head -c 2000; echo
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: build-${{ inputs.abi_slug }}-${{ matrix.index }}
+          path: out/
+          if-no-files-found: warn
+          compression-level: 0
+
+  # ---------------------------------------------------------------------
+  # merge: one job after every build job ended (success or not). Unions
+  # the results, signs the touched shards in a short FreeBSD VM (pkg repo
+  # needs pkg), uploads the assets and refreshes the index release.
+  # ---------------------------------------------------------------------
+  merge:
+    needs: [plan, build]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.indices != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-${{ inputs.abi_slug }}-*
+          path: work/jobs
+
+      - name: Merge the job results
+        run: |
+          set -eu
+          ls work/jobs
+          PYTHONPATH=scripts python3 scripts/merge.py --jobs work/jobs --out work/merged
+          du -sh work/merged/pkgs
+          cat work/merged/result.json | python3 -c 'import json,sys; r=json.load(sys.stdin); print("built", len(r["built"]), "failed", len(r["failed"]), "ignored", len(r["ignored"]))'
+
       # The signing key comes from a secret and is written into work/, which
-      # the VM sees over NFS. The private key never leaves this job; the VM
-      # is discarded when the job ends.
+      # the VM sees over NFS. The private key never leaves this job.
       #
       # The secret holds the key BASE64-ENCODED. pkg's ecdsa and eddsa
       # signers (pkgsign_ecc.c, libecc) accept only keys made by
       # "pkg key --create", which are binary -- 148 bytes for ecdsa -- and a
-      # GitHub secret is text. OpenSSL-made EC keys are rejected outright:
-      # pkgsign_ossl.c checks EVP_PKEY_id(pkey) != EVP_PKEY_RSA and bails
-      # (measured 2026-09-02: "failed to decode private key" for both SEC1
-      # and PKCS#8). Nothing here can inspect the key; pkg repo in the VM
-      # is the check, and it fails loudly on a bad one.
+      # GitHub secret is text. OpenSSL-made EC keys are rejected outright.
       - name: Materialise the signing key
         env:
           PKG_SIGNING_KEY_B64: ${{ secrets.PKG_SIGNING_KEY }}
@@ -96,6 +327,9 @@ jobs:
           test -s work/repo.key
           echo "key: $(wc -c < work/repo.key) bytes, type ${PKG_KEY_TYPE}"
 
+      # The ledger and the open shard as published NOW (a round takes hours;
+      # nothing else writes this ABI meanwhile thanks to the concurrency
+      # group, but the fetch is cheap and keeps merge self-contained).
       - name: Fetch the published ledger and the open shard
         env:
           GH_TOKEN: ${{ github.token }}
@@ -106,93 +340,42 @@ jobs:
             --abi-slug "${{ inputs.abi_slug }}" \
             --workdir work \
             prepare --existing work/existing
-          # poudriere's package directory lives HERE on the runner (the VM
-          # symlinks its data/packages onto this NFS-mounted path). Seed
-          # it with everything already published, under the original file
-          # names and in poudriere's committed layout (.latest/All), so
-          # poudriere unqueues those instead of rebuilding them.
-          PYTHONPATH=scripts python3 scripts/seed.py \
-            --ledger   work/ledger.json \
-            --existing work/existing \
-            --dest     "work/pkgdata/packages/${{ steps.abi.outputs.jail }}-default"
-          chmod -R a+rwX work/pkgdata
 
-      - name: Build the slice and stage the shards in a FreeBSD VM
-        id: vm
+      - name: Stage and sign the shards in a FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         env:
           ABI_SLUG: ${{ inputs.abi_slug }}
-          TARGET_ABI: ${{ steps.abi.outputs.abi }}
-          FBSD_VERSION: ${{ steps.abi.outputs.version }}
-          POUDRIERE_ARCH: ${{ steps.abi.outputs.arch }}
-          # Not "JAIL": pkg treats a JAIL environment variable as "run my
-          # scripts inside that jail" and the host's own pkg install then
-          # fails every POST-INSTALL with 'jexec: jail "..." not found'.
-          # Same class of bug as ABI -> TARGET_ABI.
-          POUDRIERE_JAIL: ${{ steps.abi.outputs.jail }}
-          PKGLIST: ${{ inputs.pkglist }}
-          BUILD_DEADLINE: ${{ inputs.deadline }}
+          TARGET_ABI: ${{ needs.plan.outputs.abi }}
           REPO: ${{ github.repository }}
+          PKGLIST: ${{ inputs.pkglist }}
           PKG_KEY_TYPE: ${{ env.PKG_KEY_TYPE }}
-          # Same absolute path inside the VM: freebsd-vm mounts the
-          # workspace at its runner path.
-          PKGDATA: ${{ github.workspace }}/work/pkgdata
         with:
-          # Major-version prefix: freebsd-vm resolves it to the newest
-          # matching release ("Only the leading, '.' separated part of it is
-          # enough" -- action.yml). This is the amd64 BUILD host only; the
-          # riscv64 target version is pinned in config/abis, because
-          # poudriere needs a concrete base.txz URL.
           release: '15'
-          mem: 12288
-          cpu: 4
-          # NFS: the workspace is mounted live, so out/ written in the VM is
-          # visible on the runner immediately, and work/ written on the
-          # runner (key, ledger, open-shard packages) is visible in the VM.
+          mem: 4096
+          cpu: 2
           sync: nfs
           copyback: true
-          # The prepared image (poudriere, emulator, jail, ports tree) is
-          # cached after 'prepare' and restored on later runs, which then
-          # skip 'prepare' entirely. freebsd-vm keys that cache on
-          # sha256(prepare text + sync), NOT on the environment, so the ABI
-          # values below are spelled out literally: with them only in envs,
-          # every ABI would share one prepared image.
-          cache-after-prepare: true
-          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL PKGLIST BUILD_DEADLINE REPO PKG_KEY_TYPE PKGDATA'
-          prepare: |
-            # cache key material -- abi=${{ inputs.abi_slug }} version=${{ steps.abi.outputs.version }} arch=${{ steps.abi.outputs.arch }} jail=${{ steps.abi.outputs.jail }}
-            # prepare-epoch: 1  (bump to force a fresh jail and ports tree)
-            set -eu
-            mkdir -p /root/prep
-            tar -cf - scripts | tar -xf - -C /root/prep
-            export FBSD_VERSION='${{ steps.abi.outputs.version }}'
-            export POUDRIERE_ARCH='${{ steps.abi.outputs.arch }}'
-            export POUDRIERE_JAIL='${{ steps.abi.outputs.jail }}'
-            sh /root/prep/scripts/vm_prepare.sh
+          envs: 'ABI_SLUG TARGET_ABI REPO PKGLIST PKG_KEY_TYPE'
           run: |
             set -eu
-            # Run from a private copy, never off the live NFS mount: a
-            # host-side edit while sh is reading a script shifts the byte
-            # offsets it executes from.
-            rm -rf /root/build
-            mkdir -p /root/build
-            tar -cf - scripts config | tar -xf - -C /root/build
-            cp "${PKGLIST}" /root/build/slice.txt
-            cd /root/build
-            export SLICE_FILE=/root/build/slice.txt
+            # pkg repo / pkg key need the full pkg, not just pkg-static.
+            env ASSUME_ALWAYS_YES=yes pkg bootstrap -f >/dev/null 2>&1 || true
+            pkg -v
+            rm -rf /root/merge
+            mkdir -p /root/merge
+            tar -cf - scripts config | tar -xf - -C /root/merge
+            cd /root/merge
             WS="$(cd "$GITHUB_WORKSPACE" && pwd)"
-            sh scripts/vm_build.sh
-
             # The public key is derived HERE, by pkg itself: for the ecc
             # signers it is a binary DER blob only pkg key can produce, and
             # this is also the exact bytes consumers put in pubkey:.
             pkg key --public -t "${PKG_KEY_TYPE}" "$WS/work/repo.key" > "$WS/work/repo.pub"
             test -s "$WS/work/repo.pub"
             echo "repo.pub: $(wc -c < "$WS/work/repo.pub") bytes, sha256 $(sha256 -q "$WS/work/repo.pub")"
+            PORTS_COMMIT=$(cat "$WS"/work/jobs/*/ports_commit 2>/dev/null | sort | uniq -c | sort -rn | awk 'NR==1{print $2}')
             PYTHONPATH=scripts python3 scripts/mkshards.py \
-              --result   /root/build/out/result.json \
-              --packages "${PKGDATA}/packages/${POUDRIERE_JAIL}-default/.latest/All" \
-              --packages "${PKGDATA}/packages/${POUDRIERE_JAIL}-default/.building/All" \
+              --result   "$WS/work/merged/result.json" \
+              --packages "$WS/work/merged/pkgs" \
               --ledger   "$WS/work/ledger.json" \
               --existing "$WS/work/existing" \
               --key      "$WS/work/repo.key" \
@@ -202,26 +385,18 @@ jobs:
               --abi      "${TARGET_ABI}" \
               --abi-slug "${ABI_SLUG}" \
               --origins  "${PKGLIST}" \
-              --ports-commit "$(cat /root/build/out/ports_commit)" \
+              --ports-commit "${PORTS_COMMIT:-unknown}" \
               --now      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
               --out      "$WS/out"
-            cp /root/build/out/result.json /root/build/out/build_seconds "$WS/out/" 2>/dev/null || true
-            # logs of failed ports, for diagnosis after the runner is gone
-            if [ -d /root/build/out/faillogs ]; then
-              mkdir -p "$WS/out/faillogs"
-              cp /root/build/out/faillogs/* "$WS/out/faillogs/" 2>/dev/null || true
-            fi
-            ls -la "$WS/out" "$WS/out/shards" "$WS/out/faillogs" 2>/dev/null || true
+            ls -la "$WS/out" "$WS/out/shards" 2>/dev/null || true
 
       - name: Show what came back
         if: always()
         run: |
           set -eux
-          echo "prepared-image cache hit: ${{ steps.vm.outputs.cache-after-prepare-hit }}"
           ls -la out || true
-          ls -la out/shards/* || true
-          cat out/result.json || true
-          cat out/upload.json || true
+          ls out/shards/* | head -50 || true
+          cat out/result.json | head -c 3000 || true
           cat out/anyvm.conf || true
 
       - name: Publish shard releases and refresh the index
@@ -237,11 +412,11 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: build-results-${{ inputs.abi_slug }}
+          name: merge-results-${{ inputs.abi_slug }}
           path: |
             out/result.json
             out/ledger.json
             out/anyvm.conf
             out/upload.json
-            out/faillogs/
+            work/merged/result.json
           if-no-files-found: warn

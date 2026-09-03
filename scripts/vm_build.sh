@@ -85,6 +85,69 @@ if [ -n "${PKGDATA:-}" ]; then
     echo "seeded packages: $(ls "${PKGDATA}/packages/${JAIL}-${PORTS_TREE}/.latest/All" 2>/dev/null | wc -l | tr -d ' ')"
 fi
 
+# Ports the runner must never attempt (toolchain giants that cannot
+# finish inside a 6-hour job under qemu-user). poudriere loads
+# poudriere.d/blacklist for every jail (common.sh load_blacklist).
+if [ -n "${BLACKLIST:-}" ] && [ -f "${BLACKLIST}" ]; then
+    mkdir -p /usr/local/etc/poudriere.d
+    cp "${BLACKLIST}" /usr/local/etc/poudriere.d/blacklist
+    echo "blacklist: $(grep -cv '^#' /usr/local/etc/poudriere.d/blacklist) origins"
+fi
+
+# ---------------------------------------------------------------------
+# Selective seed. A job must not download the whole repository (tens of
+# GB once the tree is in) and poudriere's PACKAGE_FETCH_URL wants one
+# repository URL, which a set of shard releases is not. So: dry-run the
+# slice first; .poudriere.ports.queued is then the slice plus its whole
+# dependency closure; fetch the published part of it (wantlist.py maps
+# ledger entries to shard asset URLs) into the committed layout with
+# Latest/pkg.pkg; the real bulk unqueues those and builds the rest.
+# ---------------------------------------------------------------------
+LOGROOT="/usr/local/poudriere/data/logs/bulk/${JAIL}-${PORTS_TREE}"
+if [ -n "${PKGDATA:-}" ] && [ -n "${LEDGER:-}" ] && [ -f "${LEDGER}" ] && [ -n "${REPO:-}" ]; then
+    SEED_STARTED=$(date +%s)
+    echo "=== dry run of the slice for its dependency closure ==="
+    poudriere bulk -n -j "${JAIL}" -p "${PORTS_TREE}" -f "${SLICE_FILE}" \
+        > "${OUTDIR}/dryrun.log" 2>&1 || echo "dry run exited $? (see dryrun.log)"
+    grep -aE 'Queued:|Ignored:|blacklisted' "${OUTDIR}/dryrun.log" | tail -3
+    QUEUED="${LOGROOT}/latest/.poudriere.ports.queued"
+    if [ -f "${QUEUED}" ]; then
+        PYTHONPATH="$(dirname "$0")" python3 "$(dirname "$0")/wantlist.py" \
+            --ledger "${LEDGER}" --queued "${QUEUED}" --repo "${REPO}" \
+            --abi-slug "${ABI_SLUG}" --out "${OUTDIR}/wantlist.txt"
+        SEEDROOT="${PKGDATA}/packages/${JAIL}-${PORTS_TREE}"
+        if [ ! -L "${SEEDROOT}/.latest" ]; then
+            REAL=".real_$(date +%s)"
+            mkdir -p "${SEEDROOT}/${REAL}/All"
+            ln -s "${REAL}" "${SEEDROOT}/.latest"
+            [ -e "${SEEDROOT}/All" ] || ln -s ".latest/All" "${SEEDROOT}/All"
+        fi
+        SEEDALL="${SEEDROOT}/.latest/All"
+        mkdir -p "${SEEDALL}"
+        # Eight fetches at a time; a failed fetch just leaves the port to
+        # be rebuilt, so per-file errors are not fatal.
+        n=0
+        while IFS="$(printf '\t')" read -r url name; do
+            [ -n "${url}" ] || continue
+            [ -s "${SEEDALL}/${name}" ] && continue
+            fetch -q -o "${SEEDALL}/${name}" "${url}" 2>/dev/null || rm -f "${SEEDALL}/${name}" &
+            n=$((n + 1))
+            [ $((n % 8)) -eq 0 ] && wait
+        done < "${OUTDIR}/wantlist.txt"
+        wait
+        PKGFILE=$(ls "${SEEDALL}" 2>/dev/null | grep -E '^pkg-[0-9].*\.pkg$' | head -1)
+        if [ -n "${PKGFILE}" ]; then
+            mkdir -p "${SEEDROOT}/.latest/Latest"
+            ln -sf "../All/${PKGFILE}" "${SEEDROOT}/.latest/Latest/pkg.pkg"
+        else
+            echo "WARNING: no pkg-*.pkg among the seeded packages; poudriere will discard the seed (pkg bootstrap missing)"
+        fi
+        echo "seed: $(ls "${SEEDALL}" | wc -l | tr -d ' ') packages in ${SEEDALL} after $(( $(date +%s) - SEED_STARTED ))s"
+    else
+        echo "WARNING: dry run left no queue file; building without a seed"
+    fi
+fi
+
 # Pin the ports tree commit for the ledger. The tree is frozen inside the
 # cached image, so this changes only when the prepare text changes.
 if git -C "/usr/local/poudriere/ports/${PORTS_TREE}" rev-parse HEAD \
