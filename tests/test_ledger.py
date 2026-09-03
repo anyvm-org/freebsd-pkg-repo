@@ -104,34 +104,72 @@ class AddOriginsTest(unittest.TestCase):
         self.assertEqual(led["ports"]["sysutils/tree"]["state"], "built")
         self.assertTrue(ledger.is_done(led))
 
+    def test_every_listed_flavor_is_its_own_entry(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", [])
+        added = ledger.add_origins(led, ["devel/llvm20", "devel/llvm20@lite"])
+        self.assertEqual(added, ["devel/llvm20", "devel/llvm20@lite"])
+
+
+LISTED = ["devel/git", "devel/git@lite", "devel/llvm20", "devel/llvm20@lite",
+          "devel/py-Jinja2", "security/sudo"]
+
 
 class FlavorTest(unittest.TestCase):
+    """The list writes a port's default flavor bare and other flavors with
+    @name; poudriere reports the default flavor by its real name."""
 
-    def test_flavored_build_resolves_the_listed_bare_origin(self):
-        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["devel/git"])
+    def test_default_flavor_report_keys_as_the_bare_origin(self):
+        self.assertEqual(ledger.canonical_origin(LISTED, "devel/git@default"), "devel/git")
+        self.assertEqual(ledger.canonical_origin(LISTED, "devel/py-Jinja2@py312"), "devel/py-Jinja2")
+        self.assertEqual(ledger.canonical_origin(LISTED, "security/sudo@default"), "security/sudo")
+
+    def test_listed_flavor_keeps_its_name(self):
+        self.assertEqual(ledger.canonical_origin(LISTED, "devel/git@lite"), "devel/git@lite")
+        self.assertEqual(ledger.canonical_origin(LISTED, "devel/llvm20@lite"), "devel/llvm20@lite")
+
+    def test_unlisted_port_is_left_as_reported(self):
+        self.assertEqual(ledger.canonical_origin(LISTED, "x/dep@py312"), "x/dep@py312")
+        self.assertEqual(ledger.canonical_origin(LISTED, "x/dep"), "x/dep")
+
+    def test_merge_result_keys_the_default_flavor_onto_the_listed_origin(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", LISTED)
+        ledger.merge_result(led, {"built": {"devel/git@default": "git-2.55.0.pkg",
+                                           "devel/llvm20@lite": "llvm20-lite-20.1.8_3.pkg"}},
+                            NOW, listed=LISTED)
+        self.assertEqual(led["ports"]["devel/git"]["state"], "built")
+        self.assertNotIn("devel/git@default", led["ports"])
+        self.assertEqual(led["ports"]["devel/llvm20@lite"]["state"], "built")
+        self.assertEqual(led["ports"]["devel/llvm20"]["state"], "pending")
+
+    def test_canonicalise_migrates_old_keys(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", LISTED)
         ledger.merge_result(led, {"built": {"devel/git@default": "git-2.55.0.pkg"}}, NOW)
-        self.assertEqual(ledger.resolve_flavors(led), ["devel/git"])
-        self.assertNotIn("devel/git", led["ports"])
-        self.assertEqual(led["ports"]["devel/git@default"]["state"], "built")
-        self.assertTrue(ledger.is_done(led))
+        self.assertEqual(ledger.canonicalise(led, LISTED), [("devel/git@default", "devel/git")])
+        self.assertEqual(led["ports"]["devel/git"]["pkgfile"], "git-2.55.0.pkg")
+        self.assertTrue(all("@default" not in k for k in led["ports"]))
 
-    def test_bare_origin_with_its_own_package_is_kept(self):
-        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["net/rsync"])
-        ledger.merge_result(led, {"built": {"net/rsync": "rsync-3.5.0.pkg",
-                                           "net/rsync@x": "rsync-x.pkg"}}, NOW)
-        self.assertEqual(ledger.resolve_flavors(led), [])
-        self.assertIn("net/rsync", led["ports"])
+    def test_canonicalise_never_overwrites_a_published_bare_entry(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", LISTED)
+        ledger.merge_result(led, {"built": {"devel/git": "git-2.55.0.pkg"}}, NOW)
+        ledger.merge_result(led, {"built": {"devel/git@default": "git-2.56.0.pkg"}}, NOW)
+        ledger.canonicalise(led, LISTED)
+        self.assertEqual(led["ports"]["devel/git"]["pkgfile"], "git-2.55.0.pkg")
 
-    def test_bare_origin_without_flavored_sibling_stays_pending(self):
-        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["security/sudo"])
-        self.assertEqual(ledger.resolve_flavors(led), [])
-        self.assertEqual(ledger.pending_origins(led), ["security/sudo"])
 
-    def test_add_origins_skips_a_bare_origin_already_built_flavored(self):
-        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", [])
-        ledger.merge_result(led, {"built": {"devel/git@default": "git-2.55.0.pkg"}}, NOW)
-        self.assertEqual(ledger.add_origins(led, ["devel/git", "shells/bash"]), ["shells/bash"])
-        self.assertNotIn("devel/git", led["ports"])
+class MarkIgnoredTest(unittest.TestCase):
+
+    def test_blacklist_marks_every_flavor_ignored(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", LISTED)
+        changed = ledger.mark_ignored(led, ["devel/llvm20"])
+        self.assertEqual(changed, ["devel/llvm20", "devel/llvm20@lite"])
+        self.assertNotIn("devel/llvm20", ledger.pending_origins(led))
+        self.assertIn("devel/git", ledger.pending_origins(led))
+
+    def test_built_entries_are_left_alone(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", LISTED)
+        ledger.merge_result(led, {"built": {"devel/llvm20": "llvm20-20.1.8_3.pkg"}}, NOW)
+        self.assertEqual(ledger.mark_ignored(led, ["devel/llvm20"]), ["devel/llvm20@lite"])
+        self.assertEqual(led["ports"]["devel/llvm20"]["state"], "built")
 
 
 class DoneTest(unittest.TestCase):

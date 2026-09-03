@@ -33,6 +33,13 @@ class SliceTest(unittest.TestCase):
     def test_one_slice_holds_everything(self):
         self.assertEqual(slicing.assign(ORIGINS, 1), [sorted(ORIGINS)])
 
+    def test_all_flavors_of_a_port_share_a_slice(self):
+        for k in (2, 7, 16, 18):
+            self.assertEqual(slicing.slice_of("devel/llvm20", k),
+                             slicing.slice_of("devel/llvm20@lite", k))
+            self.assertEqual(slicing.slice_of("devel/git", k),
+                             slicing.slice_of("devel/git@tiny", k))
+
     def test_buckets_are_sorted(self):
         for bucket in slicing.assign(ORIGINS, 2):
             self.assertEqual(bucket, sorted(bucket))

@@ -38,10 +38,49 @@ def new_ledger(abi, ports_commit, origins):
     }
 
 
+def canonical_origin(listed, originspec):
+    """The ledger key for an originspec poudriere reported.
+
+    The origin list follows poudriere's own convention (bulk -a writes it
+    that way): a port's DEFAULT flavor is listed bare (devel/git,
+    devel/llvm20) and its other flavors with @name (devel/git@lite,
+    devel/llvm20@lite). poudriere reports the default flavor with its
+    real name, devel/git@default or devel/py-foo@py312, which is not what
+    the list says. So: a reported origin@flavor that is NOT itself listed
+    while its bare origin IS listed is the default flavor and keys as the
+    bare origin. Everything else keys as reported.
+    """
+    if "@" in originspec and originspec not in listed:
+        bare = originspec.split("@", 1)[0]
+        if bare in listed:
+            return bare
+    return originspec
+
+
+def canonicalise(led, listed):
+    """Re-key entries recorded under a default flavor's real name onto the
+    listed bare origin (run 33694090650 stored devel/git@default and
+    security/sudo@default next to pending devel/git and security/sudo).
+    A bare entry that has nothing recorded yields to the flavored one.
+    Returns [(old_key, new_key)]."""
+    listed = set(listed)
+    moved = []
+    for key in sorted(led["ports"]):
+        target = canonical_origin(listed, key)
+        if target == key:
+            continue
+        entry = led["ports"].pop(key)
+        current = led["ports"].get(target)
+        if current is None or not current.get("pkgfile"):
+            led["ports"][target] = entry
+        moved.append((key, target))
+    return moved
+
+
 def add_origins(led, origins):
-    """Queue every origin not yet in the ledger as pending. Entries that
-    exist keep their state: a built dependency stays built, a listed port
-    that already failed keeps its count. Returns the origins added.
+    """Queue every listed origin not yet in the ledger as pending. Entries
+    that exist keep their state: a built dependency stays built, a listed
+    port that already failed keeps its count. Returns the origins added.
 
     Without this an existing ledger never learned about a new slice: run
     33639294075 built 92 of a 115-port bootstrap slice, and the ledger,
@@ -50,54 +89,34 @@ def add_origins(led, origins):
     """
     added = []
     for origin in origins:
-        if origin in led["ports"] or has_flavored_entry(led, origin):
+        if origin in led["ports"]:
             continue
         led["ports"][origin] = _blank_entry()
         added.append(origin)
     return added
 
 
-def has_flavored_entry(led, origin):
-    """True when the ledger holds origin@<flavor> for this bare origin."""
-    prefix = origin + "@"
-    return any(key.startswith(prefix) for key in led["ports"])
-
-
-def resolve_flavors(led):
-    """Retire bare pending origins that poudriere reported under a FLAVOR.
-
-    A list names devel/git; poudriere builds its default flavor and
-    reports the originspec devel/git@default, so merge_result records
-    THAT as built while the listed bare origin stays pending forever
-    (run 33694090650: every package built, ledger pending=2). A bare
-    entry that never got a package and has a flavored sibling is the
-    same port, resolved. Returns the origins retired.
-    """
-    retired = []
-    for origin in sorted(led["ports"]):
-        entry = led["ports"][origin]
-        if "@" in origin or entry.get("pkgfile"):
-            continue
-        if entry["state"] == STATE_PENDING and has_flavored_entry(led, origin):
-            led["ports"].pop(origin)
-            retired.append(origin)
-    return retired
-
-
-def merge_result(led, result, now):
+def merge_result(led, result, now, listed=None):
     """Fold one builder job's result manifest into the ledger.
 
-    now is an ISO-8601 string supplied by the caller.
+    now is an ISO-8601 string supplied by the caller. listed, when given,
+    is the origin list the round was cut from; reported originspecs are
+    keyed through canonical_origin against it.
     """
+    listed = set(listed or ())
+
+    def key(originspec):
+        return canonical_origin(listed, originspec)
+
     ports = led["ports"]
     for origin, pkgfile in result.get("built", {}).items():
-        entry = _entry(ports, origin)
+        entry = _entry(ports, key(origin))
         entry["state"] = STATE_BUILT
         entry["pkgfile"] = pkgfile
         entry["built_at"] = now
         entry["fail_count"] = 0
     for origin in result.get("failed", []):
-        entry = _entry(ports, origin)
+        entry = _entry(ports, key(origin))
         entry["fail_count"] += 1
         # A port that already has a published package keeps it. poudriere
         # only rebuilds a built port when it decided the package is stale
@@ -113,10 +132,22 @@ def merge_result(led, result, now):
                           if entry["fail_count"] >= MAX_FAILURES
                           else STATE_PENDING)
     for origin in result.get("ignored", []):
-        _entry(ports, origin)["state"] = STATE_IGNORED
+        _entry(ports, key(origin))["state"] = STATE_IGNORED
     for origin in result.get("oversize", {}):
-        _entry(ports, origin)["state"] = STATE_OVERSIZE
+        _entry(ports, key(origin))["state"] = STATE_OVERSIZE
     return led
+
+
+def mark_ignored(led, origins):
+    """Record every listed origin (all flavors of it) as ignored: the CI
+    blacklist. Built entries are left alone. Returns the keys changed."""
+    bare = set(o.split("@", 1)[0] for o in origins)
+    changed = []
+    for key, entry in led["ports"].items():
+        if key.split("@", 1)[0] in bare and entry["state"] == STATE_PENDING:
+            entry["state"] = STATE_IGNORED
+            changed.append(key)
+    return sorted(changed)
 
 
 def pending_origins(led):

@@ -26,8 +26,15 @@ import ledger
 
 def slice_of(origin, slices):
     """Stable slice index for an origin (sha1, not hash(): that is salted
-    per process)."""
-    digest = hashlib.sha1(origin.encode("ascii")).digest()
+    per process). Hashed on the bare origin so every flavor of a port
+    lands in the same slice: with devel/llvm20@lite listed in one slice
+    and devel/llvm20 only reachable as a dependency there, poudriere
+    skipped the default flavor's metadata lookup ("SKIPPING devel/llvm20
+    - metadata lookup queued=lite"), never saw its IGNORE, and died with
+    "Packages stuck in queue (depended on but not in queue)" (rounds 1
+    and 2, 2026-09-03). Listing all flavors together avoids the path."""
+    bare = origin.split("@", 1)[0]
+    digest = hashlib.sha1(bare.encode("ascii")).digest()
     return int.from_bytes(digest[:4], "big") % slices
 
 

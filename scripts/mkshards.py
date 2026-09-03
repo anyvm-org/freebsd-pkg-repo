@@ -240,18 +240,30 @@ def main(argv=None):
     else:
         led = ledger.new_ledger(args.abi, args.ports_commit, origins)
 
+    # poudriere reports a port's default flavor by its real name
+    # (devel/git@default, devel/py-foo@py312); the list, and so the
+    # ledger, names it bare. Re-key the result before anything reads it.
+    listed = set(origins)
+    moved = ledger.canonicalise(led, listed)
+    if moved:
+        print("ledger: %d entries re-keyed onto their listed origin" % len(moved))
+    result = {
+        "built": dict((ledger.canonical_origin(listed, o), f)
+                      for o, f in result.get("built", {}).items()),
+        "failed": [ledger.canonical_origin(listed, o) for o in result.get("failed", [])],
+        "ignored": [ledger.canonical_origin(listed, o) for o in result.get("ignored", [])],
+        "oversize": dict((ledger.canonical_origin(listed, o), v)
+                         for o, v in result.get("oversize", {}).items()),
+    }
+
     # failures / ignores / oversize first, then the built set via plan()
-    ledger.merge_result(led, {"failed": result.get("failed", []),
-                              "ignored": result.get("ignored", []),
-                              "oversize": result.get("oversize", {})},
+    ledger.merge_result(led, {"failed": result["failed"],
+                              "ignored": result["ignored"],
+                              "oversize": result["oversize"]},
                         args.now)
 
     os.makedirs(args.out, exist_ok=True)
-    spec_by_shard = plan(led, result.get("built", {}), args.now)
-    resolved = ledger.resolve_flavors(led)
-    if resolved:
-        print("ledger: %d listed origins resolved to flavored builds: %s"
-              % (len(resolved), " ".join(resolved)))
+    spec_by_shard = plan(led, result["built"], args.now)
     upload = execute(spec_by_shard, args)
 
     with open(os.path.join(args.out, "ledger.json"), "w") as handle:

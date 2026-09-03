@@ -90,15 +90,22 @@ jobs:
                      if l.strip() and not l.startswith("#")]
           if os.path.isfile(path):
               led = json.load(open(path))
+              # keys recorded under a default flavor's real name move
+              # onto the listed bare origin (devel/git@default -> devel/git)
+              moved = ledger.canonicalise(led, origins)
               added = ledger.add_origins(led, origins)
           else:
               led = ledger.new_ledger("${{ steps.abi.outputs.abi }}", "unknown", origins)
-              added = origins
-          ledger.resolve_flavors(led)
+              moved, added = [], origins
+          # The CI blacklist: every flavor of those ports is ignored here
+          # and never enters a slice (built on a bigger machine instead).
+          black = [l.split("#")[0].strip() for l in open("config/blacklist")]
+          ignored = ledger.mark_ignored(led, [b for b in black if b])
           json.dump(led, open(path, "w"), indent=2, sort_keys=True)
           pend = ledger.pending_origins(led)
-          print("ledger: %d entries, %d queued from the list, %d pending"
-                % (len(led["ports"]), len(added), len(pend)))
+          print("ledger: %d entries, %d re-keyed, %d queued from the list, "
+                "%d blacklisted, %d pending"
+                % (len(led["ports"]), len(moved), len(added), len(ignored), len(pend)))
           PY
           K='${{ inputs.slices }}'
           PYTHONPATH=scripts python3 scripts/slice.py --ledger work/ledger.json --slices "$K" --count
