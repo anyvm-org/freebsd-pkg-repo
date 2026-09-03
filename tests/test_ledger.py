@@ -105,6 +105,35 @@ class AddOriginsTest(unittest.TestCase):
         self.assertTrue(ledger.is_done(led))
 
 
+class FlavorTest(unittest.TestCase):
+
+    def test_flavored_build_resolves_the_listed_bare_origin(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["devel/git"])
+        ledger.merge_result(led, {"built": {"devel/git@default": "git-2.55.0.pkg"}}, NOW)
+        self.assertEqual(ledger.resolve_flavors(led), ["devel/git"])
+        self.assertNotIn("devel/git", led["ports"])
+        self.assertEqual(led["ports"]["devel/git@default"]["state"], "built")
+        self.assertTrue(ledger.is_done(led))
+
+    def test_bare_origin_with_its_own_package_is_kept(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["net/rsync"])
+        ledger.merge_result(led, {"built": {"net/rsync": "rsync-3.5.0.pkg",
+                                           "net/rsync@x": "rsync-x.pkg"}}, NOW)
+        self.assertEqual(ledger.resolve_flavors(led), [])
+        self.assertIn("net/rsync", led["ports"])
+
+    def test_bare_origin_without_flavored_sibling_stays_pending(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["security/sudo"])
+        self.assertEqual(ledger.resolve_flavors(led), [])
+        self.assertEqual(ledger.pending_origins(led), ["security/sudo"])
+
+    def test_add_origins_skips_a_bare_origin_already_built_flavored(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", [])
+        ledger.merge_result(led, {"built": {"devel/git@default": "git-2.55.0.pkg"}}, NOW)
+        self.assertEqual(ledger.add_origins(led, ["devel/git", "shells/bash"]), ["shells/bash"])
+        self.assertNotIn("devel/git", led["ports"])
+
+
 class DoneTest(unittest.TestCase):
 
     def test_not_done_while_anything_pends(self):

@@ -50,10 +50,38 @@ def add_origins(led, origins):
     """
     added = []
     for origin in origins:
-        if origin not in led["ports"]:
-            led["ports"][origin] = _blank_entry()
-            added.append(origin)
+        if origin in led["ports"] or has_flavored_entry(led, origin):
+            continue
+        led["ports"][origin] = _blank_entry()
+        added.append(origin)
     return added
+
+
+def has_flavored_entry(led, origin):
+    """True when the ledger holds origin@<flavor> for this bare origin."""
+    prefix = origin + "@"
+    return any(key.startswith(prefix) for key in led["ports"])
+
+
+def resolve_flavors(led):
+    """Retire bare pending origins that poudriere reported under a FLAVOR.
+
+    A list names devel/git; poudriere builds its default flavor and
+    reports the originspec devel/git@default, so merge_result records
+    THAT as built while the listed bare origin stays pending forever
+    (run 33694090650: every package built, ledger pending=2). A bare
+    entry that never got a package and has a flavored sibling is the
+    same port, resolved. Returns the origins retired.
+    """
+    retired = []
+    for origin in sorted(led["ports"]):
+        entry = led["ports"][origin]
+        if "@" in origin or entry.get("pkgfile"):
+            continue
+        if entry["state"] == STATE_PENDING and has_flavored_entry(led, origin):
+            led["ports"].pop(origin)
+            retired.append(origin)
+    return retired
 
 
 def merge_result(led, result, now):

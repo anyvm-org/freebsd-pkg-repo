@@ -248,6 +248,10 @@ def main(argv=None):
 
     os.makedirs(args.out, exist_ok=True)
     spec_by_shard = plan(led, result.get("built", {}), args.now)
+    resolved = ledger.resolve_flavors(led)
+    if resolved:
+        print("ledger: %d listed origins resolved to flavored builds: %s"
+              % (len(resolved), " ".join(resolved)))
     upload = execute(spec_by_shard, args)
 
     with open(os.path.join(args.out, "ledger.json"), "w") as handle:
