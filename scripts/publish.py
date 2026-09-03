@@ -12,10 +12,12 @@ a manifest or a signature. Uses the gh CLI, preinstalled on runners.
 """
 
 import argparse
+import fnmatch
 import json
 import os
 import subprocess
 import sys
+import time
 
 import shard
 
@@ -48,13 +50,49 @@ def ensure_release(repo, tag):
     print("created release %s" % tag)
 
 
-def download_assets(repo, tag, pattern, dest):
-    """Return True if at least one matching asset was fetched."""
-    os.makedirs(dest, exist_ok=True)
-    probe = run(["gh", "release", "download", tag, "--repo", repo,
-                 "--pattern", pattern, "--dir", dest, "--clobber"],
+DOWNLOAD_ATTEMPTS = 6
+DOWNLOAD_RETRY_SECONDS = 20
+
+
+def release_assets(repo, tag):
+    """Names of the assets on a release, or None when the release does
+    not exist."""
+    probe = run(["gh", "release", "view", tag, "--repo", repo,
+                 "--json", "assets", "--jq", ".assets[].name"],
                 check=False)
-    return probe.returncode == 0
+    if probe.returncode != 0:
+        return None
+    return [line.strip() for line in probe.stdout.splitlines() if line.strip()]
+
+
+def download_assets(repo, tag, pattern, dest, sleep=time.sleep):
+    """Fetch the assets matching pattern. Returns False only when the
+    release or the asset genuinely does not exist; a download that fails
+    is retried and then raised, never reported as "nothing there".
+
+    Run 33733013149 planned a whole round from an empty ledger because a
+    transient "connection reset by peer" on the asset CDN was taken for
+    "no ledger published yet"; in the merge job the same mistake would
+    have PUBLISHED that empty ledger over the real one.
+    """
+    names = release_assets(repo, tag)
+    if names is None:
+        return False
+    if not fnmatch.filter(names, pattern):
+        return False
+    os.makedirs(dest, exist_ok=True)
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        probe = run(["gh", "release", "download", tag, "--repo", repo,
+                     "--pattern", pattern, "--dir", dest, "--clobber"],
+                    check=False)
+        if probe.returncode == 0:
+            return True
+        print("download of %s from %s failed (attempt %d/%d)"
+              % (pattern, tag, attempt, DOWNLOAD_ATTEMPTS))
+        if attempt < DOWNLOAD_ATTEMPTS:
+            sleep(DOWNLOAD_RETRY_SECONDS)
+    raise RuntimeError("could not download %s from release %s after %d attempts"
+                       % (pattern, tag, DOWNLOAD_ATTEMPTS))
 
 
 def cmd_prepare(args):

@@ -77,11 +77,29 @@ jobs:
         run: |
           set -eu
           mkdir -p work/slices
-          # The ledger lives on the index release; a missing one means a
-          # brand-new ABI and starts empty.
-          gh release download 'idx-${{ inputs.abi_slug }}' \
-            --repo '${{ github.repository }}' -p ledger.json -D work --clobber \
-            || echo "no ledger yet for ${{ inputs.abi_slug }}"
+          # The ledger lives on the index release. Only a release that
+          # really has no ledger.json (a brand-new ABI) may start empty; a
+          # failed download must not (run 33733013149: "read: connection
+          # reset by peer" on the asset CDN was swallowed by an || echo,
+          # the round planned from an empty ledger, and every job rebuilt
+          # pkg and the whole toolchain from scratch).
+          if gh release view 'idx-${{ inputs.abi_slug }}' --repo '${{ github.repository }}' \
+               --json assets --jq '.assets[].name' 2>/dev/null | grep -qx ledger.json; then
+            n=0
+            until gh release download 'idx-${{ inputs.abi_slug }}' \
+                    --repo '${{ github.repository }}' -p ledger.json -D work --clobber; do
+              n=$((n + 1))
+              if [ "$n" -ge 6 ]; then
+                echo "ledger.json download failed $n times; refusing to plan from an empty ledger" >&2
+                exit 1
+              fi
+              sleep 20
+            done
+            test -s work/ledger.json
+            python3 -c 'import json,sys; led=json.load(open("work/ledger.json")); print("ledger fetched:", len(led["ports"]), "entries")'
+          else
+            echo "no ledger yet for ${{ inputs.abi_slug }}: first round for this ABI"
+          fi
           PYTHONPATH=scripts python3 - <<'PY'
           import json, os
           import ledger
