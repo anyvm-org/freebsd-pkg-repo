@@ -95,6 +95,28 @@ def download_assets(repo, tag, pattern, dest, sleep=time.sleep):
                        % (pattern, tag, DOWNLOAD_ATTEMPTS))
 
 
+UPLOAD_ATTEMPTS = 4
+
+
+def upload_batch(repo, tag, batch, sleep=time.sleep):
+    """gh release upload --clobber for one batch, retried. Uploading 800
+    assets is 16 calls against an API that does fail now and then (run
+    33841503080 died on the 11th batch, and the CalledProcessError hid
+    gh's own message); --clobber makes a retry idempotent."""
+    for attempt in range(1, UPLOAD_ATTEMPTS + 1):
+        probe = run(["gh", "release", "upload", tag, "--repo", repo,
+                     "--clobber"] + batch, check=False)
+        if probe.returncode == 0:
+            return
+        print("upload of %d assets to %s failed (attempt %d/%d): %s"
+              % (len(batch), tag, attempt, UPLOAD_ATTEMPTS,
+                 (probe.stderr or "").strip()[-400:]))
+        if attempt < UPLOAD_ATTEMPTS:
+            sleep(DOWNLOAD_RETRY_SECONDS)
+    raise RuntimeError("could not upload a batch of %d assets to %s after %d attempts"
+                       % (len(batch), tag, UPLOAD_ATTEMPTS))
+
+
 def cmd_prepare(args):
     index = shard.index_tag(args.abi_slug)
     os.makedirs(args.workdir, exist_ok=True)
@@ -138,9 +160,7 @@ def cmd_publish(args):
         paths = upload["upload"][tag]
         # gh accepts many files per call; batch to keep argv sane
         for start in range(0, len(paths), 50):
-            batch = paths[start:start + 50]
-            run(["gh", "release", "upload", tag, "--repo", args.repo,
-                 "--clobber"] + batch)
+            upload_batch(args.repo, tag, paths[start:start + 50])
         print("uploaded %d assets to %s" % (len(paths), tag))
 
     index = shard.index_tag(args.abi_slug)

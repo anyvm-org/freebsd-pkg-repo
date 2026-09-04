@@ -38,16 +38,37 @@ class FakeRun(object):
         class Done(object):
             pass
         done = Done()
+        done.stderr = ""
         if argv[:3] == ["gh", "release", "view"]:
             done.returncode = self.view_rc
             done.stdout = self.view_out
-        elif argv[:3] == ["gh", "release", "download"]:
+        elif argv[:3] in (["gh", "release", "download"], ["gh", "release", "upload"]):
             self.downloads += 1
             done.returncode = self.download_rcs.pop(0)
             done.stdout = ""
+            done.stderr = "HTTP 502" if done.returncode else ""
         else:
             raise AssertionError("unexpected command %r" % (argv,))
         return done
+
+
+class UploadBatchTest(unittest.TestCase):
+
+    def tearDown(self):
+        publish.run = self.real_run
+
+    def test_transient_upload_failure_is_retried(self):
+        self.real_run = publish.run
+        fake = FakeRun(0, "", [1, 0])
+        publish.run = fake
+        publish.upload_batch("o/r", "pkg-X-001", ["a.pkg", "b.pkg"], sleep=lambda s: None)
+        self.assertEqual(fake.downloads, 2)
+
+    def test_persistent_upload_failure_raises(self):
+        self.real_run = publish.run
+        publish.run = FakeRun(0, "", [1] * publish.UPLOAD_ATTEMPTS)
+        with self.assertRaises(RuntimeError):
+            publish.upload_batch("o/r", "pkg-X-001", ["a.pkg"], sleep=lambda s: None)
 
 
 class DownloadAssetsTest(unittest.TestCase):
