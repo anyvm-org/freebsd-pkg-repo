@@ -199,6 +199,22 @@ class InterruptedTest(unittest.TestCase):
         self.assertEqual(led["ports"]["devel/icu"]["state"], "oversize")
 
 
+class RequeueTest(unittest.TestCase):
+
+    def test_requeues_only_the_named_states(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc",
+                                ["databases/sqlite3", "devel/icu", "sysutils/tree"])
+        for _ in range(ledger.MAX_FAILURES):
+            ledger.merge_result(led, {"failed": ["databases/sqlite3"]}, NOW)
+        ledger.merge_result(led, {"oversize": {"devel/icu": "timeout"},
+                                  "built": {"sysutils/tree": "tree-2.3.2.pkg"}}, NOW)
+        self.assertEqual(ledger.requeue(led, ["failed"]), ["databases/sqlite3"])
+        self.assertEqual(led["ports"]["databases/sqlite3"]["state"], "pending")
+        self.assertEqual(led["ports"]["databases/sqlite3"]["fail_count"], 0)
+        self.assertEqual(led["ports"]["devel/icu"]["state"], "oversize")
+        self.assertEqual(led["ports"]["sysutils/tree"]["state"], "built")
+
+
 class DoneTest(unittest.TestCase):
 
     def test_not_done_while_anything_pends(self):

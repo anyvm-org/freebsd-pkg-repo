@@ -121,6 +121,13 @@ if [ -n "${BLACKLIST:-}" ] && [ -f "${BLACKLIST}" ]; then
     echo "blacklist: $(grep -c '^IGNORE=' /usr/local/etc/poudriere.d/make.conf) origins set IGNORE in poudriere.d/make.conf"
 fi
 
+# Per-port workarounds for qemu-user, applied to the (snapshot) ports
+# tree; see config/ports-fixups.sh for the list and the reasons.
+FIXUPS="$(dirname "$0")/../config/ports-fixups.sh"
+if [ -f "${FIXUPS}" ]; then
+    sh "${FIXUPS}" "/usr/local/poudriere/ports/${PORTS_TREE}"
+fi
+
 # ---------------------------------------------------------------------
 # Selective seed. A job must not download the whole repository (tens of
 # GB once the tree is in) and poudriere's PACKAGE_FETCH_URL wants one

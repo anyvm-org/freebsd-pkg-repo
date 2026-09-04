@@ -22,6 +22,10 @@ on:
         description: 'poudriere bulk wall-clock budget per job, seconds (job limit is 6 h; setup and collection take ~15 min)'
         required: false
         default: '18000'
+      requeue:
+        description: 'Ledger states to put back to pending this round, comma-separated (e.g. failed, or failed,oversize); empty = none'
+        required: false
+        default: ''
 
 # One round per ABI at a time. The merge job rewrites the ledger and the
 # open shard's index from the ledger the round fetched at ITS start, so
@@ -119,11 +123,14 @@ jobs:
           # and never enters a slice (built on a bigger machine instead).
           black = [l.split("#")[0].strip() for l in open("config/blacklist")]
           ignored = ledger.mark_ignored(led, [b for b in black if b])
+          states = [s.strip() for s in "${{ inputs.requeue }}".split(",") if s.strip()]
+          requeued = ledger.requeue(led, states) if states else []
           json.dump(led, open(path, "w"), indent=2, sort_keys=True)
           pend = ledger.pending_origins(led)
           print("ledger: %d entries, %d re-keyed, %d queued from the list, "
-                "%d blacklisted, %d pending"
-                % (len(led["ports"]), len(moved), len(added), len(ignored), len(pend)))
+                "%d blacklisted, %d requeued (%s), %d pending"
+                % (len(led["ports"]), len(moved), len(added), len(ignored),
+                   len(requeued), ",".join(states) or "-", len(pend)))
           PY
           K='${{ inputs.slices }}'
           PYTHONPATH=scripts python3 scripts/slice.py --ledger work/ledger.json --slices "$K" --count

@@ -161,6 +161,21 @@ def mark_ignored(led, origins):
     return sorted(changed)
 
 
+def requeue(led, states):
+    """Put every entry in one of the given states back to pending with a
+    clean failure count: after a fixup for a port that kept failing, or
+    when a bigger machine takes over the oversize set. Returns the keys
+    requeued."""
+    changed = []
+    for key, entry in led["ports"].items():
+        if entry["state"] in states:
+            entry["state"] = STATE_PENDING
+            entry["fail_count"] = 0
+            entry["interrupt_count"] = 0
+            changed.append(key)
+    return sorted(changed)
+
+
 def pending_origins(led):
     """Origins still waiting to be built, in a stable order."""
     return sorted(origin for origin, entry in led["ports"].items()
