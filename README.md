@@ -200,6 +200,32 @@ removing repository"), which is the intended failure mode.
 | `config/pkglist.all` | The whole tree for riscv64, as poudriere's dry run queued it. |
 | `tests/` | Unit tests for the four pure modules. |
 
+## Operating it
+
+Start a round by hand:
+
+```
+gh workflow run build.yml --repo anyvm-org/freebsd-pkg-repo -f abi_slug=FreeBSD-15-riscv64 -f pkglist=config/pkglist.all -f slices=18 -f deadline=18000
+```
+
+Add `-f requeue=failed` (or `failed,oversize`) to give retired ports
+another round, for example after adding a fixup.
+
+The `Rounds` workflow keeps it going on its own: when a `Build` run
+completes it dispatches the next round if the merge succeeded, re-runs
+only the merge job (up to three attempts) if the merge failed, and stops
+when the plan failed or no slice had work. Pause the loop with the
+repository variable `AUTO_ROUNDS=off`; `ABI_SLUG`, `SLICES` and
+`DEADLINE` variables override the defaults it dispatches with. A build
+job whose VM dies mid-round is not retried: its slice simply comes back
+in the next round, seeded with whatever the other jobs published.
+
+Progress is the ledger on the index release:
+
+```
+gh release download idx-FreeBSD-15-riscv64 --repo anyvm-org/freebsd-pkg-repo -p ledger.json
+```
+
 ## Development
 
 ```

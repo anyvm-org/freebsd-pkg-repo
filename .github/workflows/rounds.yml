@@ -1,0 +1,91 @@
+name: Rounds
+
+# Keeps the build going without a person watching it. Every time a Build
+# run completes this looks at its merge job:
+#   merge succeeded          -> dispatch the next round
+#   merge failed, attempt<3  -> re-run just the merge job (build jobs are
+#                               kept; their artifacts are what merge reads)
+#   merge failed 3 times,    -> stop and say so
+#   plan failed, or no slice
+#   had work (tree finished)
+# Set the repository variable AUTO_ROUNDS to "off" to pause the loop;
+# ABI_SLUG, SLICES and DEADLINE variables override the defaults below.
+#
+# A workflow_dispatch sent with GITHUB_TOKEN does start a new run (that
+# is the documented exception to "GITHUB_TOKEN events do not trigger
+# workflows"), and a completed run fires workflow_run whoever started it,
+# so the chain continues round after round.
+
+on:
+  workflow_run:
+    workflows: [Build]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  next:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Decide what the finished round needs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          AUTO: ${{ vars.AUTO_ROUNDS }}
+          ABI_SLUG: ${{ vars.ABI_SLUG }}
+          SLICES: ${{ vars.SLICES }}
+          DEADLINE: ${{ vars.DEADLINE }}
+        run: |
+          set -eu
+          R='${{ github.repository }}'
+          if [ "${AUTO:-on}" = "off" ]; then
+            echo "AUTO_ROUNDS is off; not touching run $RUN_ID"
+            exit 0
+          fi
+          if [ "$RUN_CONCLUSION" = "cancelled" ]; then
+            echo "run $RUN_ID was cancelled; stopping the loop here"
+            exit 0
+          fi
+          gh run view "$RUN_ID" --repo "$R" --json jobs \
+            --jq '.jobs[] | "\(.name)\t\(.conclusion // "")\t\(.databaseId)"' > jobs.tsv
+          cat jobs.tsv
+          plan=$(awk -F'\t' '$1=="plan"{print $2}' jobs.tsv)
+          merge=$(awk -F'\t' '$1=="merge"{print $2}' jobs.tsv)
+          merge_id=$(awk -F'\t' '$1=="merge"{print $3}' jobs.tsv)
+          builds=$(grep -c $'^build (' jobs.tsv || true)
+          echo "plan=$plan merge=$merge builds=$builds attempt=$ATTEMPT"
+
+          if [ "$plan" != "success" ]; then
+            echo "plan did not succeed ($plan); a person has to look"
+            exit 0
+          fi
+          if [ "$builds" -eq 0 ]; then
+            echo "no slice had work: the tree is done for this ABI, or everything left is ignored/oversize"
+            exit 0
+          fi
+          case "$merge" in
+            success)
+              echo "merge succeeded; dispatching the next round"
+              gh workflow run build.yml --repo "$R" --ref main \
+                -f "abi_slug=${ABI_SLUG:-FreeBSD-15-riscv64}" \
+                -f pkglist=config/pkglist.all \
+                -f "slices=${SLICES:-18}" \
+                -f "deadline=${DEADLINE:-18000}"
+              ;;
+            failure)
+              if [ "$ATTEMPT" -lt 3 ]; then
+                echo "merge failed on attempt $ATTEMPT; re-running the merge job only"
+                gh run rerun --job "$merge_id" --repo "$R"
+              else
+                echo "merge failed $ATTEMPT times; stopping, a person has to look"
+              fi
+              ;;
+            *)
+              echo "merge ended '$merge'; nothing to do"
+              ;;
+          esac
