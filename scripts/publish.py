@@ -103,6 +103,7 @@ UPLOAD_BACKOFF = (30, 60, 120, 240, 300, 300, 300)
 UPLOAD_ATTEMPTS = len(UPLOAD_BACKOFF) + 1
 UPLOAD_BATCH = 50
 UPLOAD_PAUSE = 3
+RATE_LIMIT_WAIT = 600
 
 
 def upload_batch(repo, tag, batch, sleep=time.sleep):
@@ -113,11 +114,18 @@ def upload_batch(repo, tag, batch, sleep=time.sleep):
                      "--clobber"] + batch, check=False)
         if probe.returncode == 0:
             return
+        err = (probe.stderr or "").strip()
         print("upload of %d assets to %s failed (attempt %d/%d): %s"
-              % (len(batch), tag, attempt, UPLOAD_ATTEMPTS,
-                 (probe.stderr or "").strip()[-300:]))
+              % (len(batch), tag, attempt, UPLOAD_ATTEMPTS, err[-300:]))
         if attempt < UPLOAD_ATTEMPTS:
-            sleep(UPLOAD_BACKOFF[attempt - 1])
+            # GITHUB_TOKEN gets 1,000 API requests per hour per
+            # repository and every asset is one request: a big round can
+            # use the hour up mid-shard. The limit resets on the hour, so
+            # wait in long steps for that instead of the short backoff.
+            if "rate limit" in err.lower():
+                sleep(RATE_LIMIT_WAIT)
+            else:
+                sleep(UPLOAD_BACKOFF[attempt - 1])
     raise RuntimeError("could not upload a batch of %d assets to %s after %d attempts"
                        % (len(batch), tag, UPLOAD_ATTEMPTS))
 

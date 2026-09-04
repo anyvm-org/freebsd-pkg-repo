@@ -44,6 +44,15 @@ env:
   # prefixes). Must match the key stored in the PKG_SIGNING_KEY secret.
   PKG_KEY_TYPE: ecdsa
 
+# GitHub API budget: GITHUB_TOKEN gets 1,000 requests per hour per
+# repository, and a merge uploads one request per asset, so a round of a
+# thousand packages exhausts it (round 9, 2026-09-04: the shard-002 upload,
+# the merge re-run's artifact download and the Rounds workflow all died on
+# "API rate limit exceeded"). The optional PUBLISH_TOKEN secret -- a
+# fine-grained PAT for this repository with contents:write and
+# actions:write -- has its own 5,000/hour budget; every gh call below uses
+# it when it is set and falls back to GITHUB_TOKEN when it is not.
+
 jobs:
   # ---------------------------------------------------------------------
   # plan: one small job. Fetches the ledger, queues the requested origins
@@ -82,7 +91,7 @@ jobs:
       - name: Fetch the ledger, queue the origins, cut the slices
         id: slices
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN || github.token }}
         run: |
           set -eu
           mkdir -p work/slices
@@ -359,7 +368,7 @@ jobs:
           pattern: build-${{ inputs.abi_slug }}-*
           path: work/jobs
           run-id: ${{ inputs.merge_run || github.run_id }}
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.PUBLISH_TOKEN || github.token }}
 
       - name: Merge the job results
         run: |
@@ -398,7 +407,7 @@ jobs:
       # group, but the fetch is cheap and keeps merge self-contained).
       - name: Fetch the published ledger and the open shard
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN || github.token }}
         run: |
           set -eu
           PYTHONPATH=scripts python3 scripts/publish.py \
@@ -472,7 +481,7 @@ jobs:
 
       - name: Publish shard releases and refresh the index
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN || github.token }}
         run: |
           set -eu
           PYTHONPATH=scripts python3 scripts/publish.py \

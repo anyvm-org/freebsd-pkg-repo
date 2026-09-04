@@ -46,7 +46,8 @@ class FakeRun(object):
             self.downloads += 1
             done.returncode = self.download_rcs.pop(0)
             done.stdout = ""
-            done.stderr = "HTTP 502" if done.returncode else ""
+            done.stderr = (getattr(self, "stderr_text", "HTTP 502")
+                           if done.returncode else "")
         else:
             raise AssertionError("unexpected command %r" % (argv,))
         return done
@@ -69,6 +70,15 @@ class UploadBatchTest(unittest.TestCase):
         publish.run = FakeRun(0, "", [1] * publish.UPLOAD_ATTEMPTS)
         with self.assertRaises(RuntimeError):
             publish.upload_batch("o/r", "pkg-X-001", ["a.pkg"], sleep=lambda s: None)
+
+    def test_rate_limit_waits_long(self):
+        self.real_run = publish.run
+        waits = []
+        fake = FakeRun(0, "", [1, 0])
+        fake.stderr_text = "HTTP 403: API rate limit exceeded for installation"
+        publish.run = fake
+        publish.upload_batch("o/r", "pkg-X-001", ["a.pkg"], sleep=waits.append)
+        self.assertEqual(waits, [publish.RATE_LIMIT_WAIT])
 
     def test_backoff_grows(self):
         self.real_run = publish.run

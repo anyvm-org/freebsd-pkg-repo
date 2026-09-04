@@ -37,11 +37,12 @@ permissions:
 jobs:
   next:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # long enough to sit out an exhausted API hour (see the retries below)
+    timeout-minutes: 80
     steps:
       - name: Decide what the finished round needs
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN || github.token }}
           RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
           ATTEMPT: ${{ github.event.workflow_run.run_attempt || 1 }}
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || 'unknown' }}
@@ -64,8 +65,18 @@ jobs:
             echo "run $RUN_ID was cancelled; stopping the loop here"
             exit 0
           fi
-          gh run view "$RUN_ID" --repo "$R" --json jobs \
-            --jq '.jobs[] | "\(.name)\t\(.conclusion // "")\t\(.databaseId)"' > jobs.tsv
+          # GITHUB_TOKEN has 1,000 API requests per hour per repository and
+          # a merge that uploads a thousand assets can spend them all; the
+          # first Rounds run after round 9 died on "API rate limit
+          # exceeded". The limit resets on the hour: wait for it.
+          n=0
+          until gh run view "$RUN_ID" --repo "$R" --json jobs \
+                  --jq '.jobs[] | "\(.name)\t\(.conclusion // "")\t\(.databaseId)"' > jobs.tsv; do
+            n=$((n + 1))
+            if [ "$n" -ge 7 ]; then echo "could not read run $RUN_ID after $n tries" >&2; exit 1; fi
+            echo "gh run view failed (try $n); waiting 10 minutes for the API limit"
+            sleep 600
+          done
           cat jobs.tsv
           plan=$(awk -F'\t' '$1=="plan"{print $2}' jobs.tsv)
           merge=$(awk -F'\t' '$1=="merge"{print $2}' jobs.tsv)
@@ -86,16 +97,24 @@ jobs:
           case "$merge" in
             success)
               echo "merge succeeded; dispatching the next round"
-              gh workflow run build.yml --repo "$R" --ref main \
-                -f "abi_slug=${ABI_SLUG:-FreeBSD-15-riscv64}" \
-                -f pkglist=config/pkglist.all \
-                -f "slices=${SLICES:-18}" \
-                -f "deadline=${DEADLINE:-18000}"
+              n=0
+              until gh workflow run build.yml --repo "$R" --ref main \
+                      -f "abi_slug=${ABI_SLUG:-FreeBSD-15-riscv64}" \
+                      -f pkglist=config/pkglist.all \
+                      -f "slices=${SLICES:-18}" \
+                      -f "deadline=${DEADLINE:-18000}"; do
+                n=$((n + 1)); [ "$n" -ge 7 ] && exit 1
+                echo "dispatch failed (try $n); waiting 10 minutes"; sleep 600
+              done
               ;;
             failure)
               if [ "$ATTEMPT" -lt 3 ]; then
                 echo "merge failed on attempt $ATTEMPT; re-running the merge job only"
-                gh run rerun --job "$merge_id" --repo "$R"
+                n=0
+                until gh run rerun --job "$merge_id" --repo "$R"; do
+                  n=$((n + 1)); [ "$n" -ge 7 ] && exit 1
+                  echo "re-run request failed (try $n); waiting 10 minutes"; sleep 600
+                done
               else
                 echo "merge failed $ATTEMPT times; stopping, a person has to look"
               fi
