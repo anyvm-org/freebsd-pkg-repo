@@ -20,6 +20,15 @@ on:
   workflow_run:
     workflows: [Build]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Build run to evaluate (for testing the loop by hand)'
+        required: true
+      dry_run:
+        description: 'Only print the decision, do not dispatch or re-run'
+        required: false
+        default: 'true'
 
 permissions:
   actions: write
@@ -33,9 +42,10 @@ jobs:
       - name: Decide what the finished round needs
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt || 1 }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || 'unknown' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
           AUTO: ${{ vars.AUTO_ROUNDS }}
           ABI_SLUG: ${{ vars.ABI_SLUG }}
           SLICES: ${{ vars.SLICES }}
@@ -46,6 +56,9 @@ jobs:
           if [ "${AUTO:-on}" = "off" ]; then
             echo "AUTO_ROUNDS is off; not touching run $RUN_ID"
             exit 0
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            gh() { echo "dry run: gh $*"; if [ "$1" = run ] && [ "$2" = view ]; then command gh "$@"; fi; }
           fi
           if [ "$RUN_CONCLUSION" = "cancelled" ]; then
             echo "run $RUN_ID was cancelled; stopping the loop here"
