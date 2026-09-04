@@ -58,7 +58,7 @@ jobs:
             exit 0
           fi
           if [ "$DRY_RUN" = "true" ]; then
-            gh() { echo "dry run: gh $*"; if [ "$1" = run ] && [ "$2" = view ]; then command gh "$@"; fi; }
+            gh() { if [ "$1" = run ] && [ "$2" = view ]; then command gh "$@"; else echo "dry run: gh $*" >&2; fi; }
           fi
           if [ "$RUN_CONCLUSION" = "cancelled" ]; then
             echo "run $RUN_ID was cancelled; stopping the loop here"
