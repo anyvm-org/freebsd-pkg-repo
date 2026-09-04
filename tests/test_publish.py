@@ -70,6 +70,40 @@ class UploadBatchTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             publish.upload_batch("o/r", "pkg-X-001", ["a.pkg"], sleep=lambda s: None)
 
+    def test_backoff_grows(self):
+        self.real_run = publish.run
+        waits = []
+        publish.run = FakeRun(0, "", [1, 1, 1, 0])
+        publish.upload_batch("o/r", "pkg-X-001", ["a.pkg"], sleep=waits.append)
+        self.assertEqual(waits, list(publish.UPLOAD_BACKOFF[:3]))
+
+
+class StillToUploadTest(unittest.TestCase):
+
+    def test_present_files_with_the_same_size_are_skipped(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            a = os.path.join(tmp, "a.pkg"); open(a, "wb").write(b"x" * 10)
+            b = os.path.join(tmp, "b.pkg"); open(b, "wb").write(b"y" * 20)
+            d = os.path.join(tmp, "data.pkg"); open(d, "wb").write(b"z" * 5)
+            present = {"a.pkg": 10, "b.pkg": 99, "data.pkg": 4}
+            self.assertEqual(publish.still_to_upload([a, b, d], present), [b, d])
+            self.assertEqual(publish.still_to_upload([a, b], {}), [a, b])
+        finally:
+            shutil.rmtree(tmp)
+
+    def test_existing_assets_parses_name_and_size(self):
+        real = publish.run
+        try:
+            class R(object):
+                returncode = 0
+                stdout = "a.pkg\t10\nweird name.pkg\t7\n"
+            publish.run = lambda argv, check=True: R()
+            self.assertEqual(publish.existing_assets("o/r", "t"),
+                             {"a.pkg": 10, "weird name.pkg": 7})
+        finally:
+            publish.run = real
+
 
 class DownloadAssetsTest(unittest.TestCase):
 

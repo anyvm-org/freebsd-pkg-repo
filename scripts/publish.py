@@ -95,14 +95,19 @@ def download_assets(repo, tag, pattern, dest, sleep=time.sleep):
                        % (pattern, tag, DOWNLOAD_ATTEMPTS))
 
 
-UPLOAD_ATTEMPTS = 4
+# GitHub applies a secondary rate limit to bursts of uploads (run
+# 33896109839: twenty 50-file batches in five minutes, then "on scraping
+# GitHub and how it may affect your rights ... Terms of Service" with a
+# request ID). Wait longer each time and give it up to 15 minutes.
+UPLOAD_BACKOFF = (30, 60, 120, 240, 300, 300, 300)
+UPLOAD_ATTEMPTS = len(UPLOAD_BACKOFF) + 1
+UPLOAD_BATCH = 50
+UPLOAD_PAUSE = 3
 
 
 def upload_batch(repo, tag, batch, sleep=time.sleep):
-    """gh release upload --clobber for one batch, retried. Uploading 800
-    assets is 16 calls against an API that does fail now and then (run
-    33841503080 died on the 11th batch, and the CalledProcessError hid
-    gh's own message); --clobber makes a retry idempotent."""
+    """gh release upload --clobber for one batch, retried with backoff;
+    --clobber makes a retry idempotent."""
     for attempt in range(1, UPLOAD_ATTEMPTS + 1):
         probe = run(["gh", "release", "upload", tag, "--repo", repo,
                      "--clobber"] + batch, check=False)
@@ -110,11 +115,41 @@ def upload_batch(repo, tag, batch, sleep=time.sleep):
             return
         print("upload of %d assets to %s failed (attempt %d/%d): %s"
               % (len(batch), tag, attempt, UPLOAD_ATTEMPTS,
-                 (probe.stderr or "").strip()[-400:]))
+                 (probe.stderr or "").strip()[-300:]))
         if attempt < UPLOAD_ATTEMPTS:
-            sleep(DOWNLOAD_RETRY_SECONDS)
+            sleep(UPLOAD_BACKOFF[attempt - 1])
     raise RuntimeError("could not upload a batch of %d assets to %s after %d attempts"
                        % (len(batch), tag, UPLOAD_ATTEMPTS))
+
+
+def existing_assets(repo, tag):
+    """{asset name: size} for a release, empty when it has none."""
+    probe = run(["gh", "release", "view", tag, "--repo", repo,
+                 "--json", "assets", "--jq", '.assets[] | "\(.name)\t\(.size)"'],
+                check=False)
+    sizes = {}
+    if probe.returncode == 0:
+        for line in probe.stdout.splitlines():
+            if "	" in line:
+                name, size = line.rsplit("	", 1)
+                try:
+                    sizes[name] = int(size)
+                except ValueError:
+                    pass
+    return sizes
+
+
+def still_to_upload(paths, present):
+    """Skip files the release already holds with the same size, so a
+    re-run after a failed batch (or a rate limit) only sends what is
+    missing. Index files change every time and so are always sent."""
+    todo = []
+    for path in paths:
+        name = os.path.basename(path)
+        if present.get(name) == os.path.getsize(path):
+            continue
+        todo.append(path)
+    return todo
 
 
 def cmd_prepare(args):
@@ -158,10 +193,17 @@ def cmd_publish(args):
                  "--repo", args.repo, "--yes"], check=False)
             print("deleted %s from %s" % (name, tag))
         paths = upload["upload"][tag]
-        # gh accepts many files per call; batch to keep argv sane
-        for start in range(0, len(paths), 50):
-            upload_batch(args.repo, tag, paths[start:start + 50])
-        print("uploaded %d assets to %s" % (len(paths), tag))
+        todo = still_to_upload(paths, existing_assets(args.repo, tag))
+        if len(todo) < len(paths):
+            print("%d of %d assets already on %s with the same size; skipping them"
+                  % (len(paths) - len(todo), len(paths), tag))
+        # gh accepts many files per call; batch to keep argv sane, and
+        # breathe between batches so the secondary rate limit stays away
+        for start in range(0, len(todo), UPLOAD_BATCH):
+            if start:
+                time.sleep(UPLOAD_PAUSE)
+            upload_batch(args.repo, tag, todo[start:start + UPLOAD_BATCH])
+        print("uploaded %d assets to %s" % (len(todo), tag))
 
     index = shard.index_tag(args.abi_slug)
     ensure_release(args.repo, index)
