@@ -66,17 +66,16 @@ if [ -n "${PKGDATA:-}" ]; then
     fi
     ln -sfn "${PKGDATA}/packages" "${PKGROOT}"
     echo "poudriere packages dir -> ${PKGDATA}/packages (host side)"
-    # The build logs go to the host too: when the VM dies mid-job (run
-    # 33841503080, "Timeout, server 127.0.0.1 not responding"), the
-    # runner can still write result.json from .poudriere.ports.* and
-    # collect the packages this job built.
-    LOGROOT_LOCAL=/usr/local/poudriere/data/logs
-    mkdir -p "${PKGDATA}/logs"
-    if [ -d "${LOGROOT_LOCAL}" ] && [ ! -L "${LOGROOT_LOCAL}" ]; then
-        mv "${LOGROOT_LOCAL}" "${LOGROOT_LOCAL}.local.$(date +%s)"
-    fi
-    ln -sfn "${PKGDATA}/logs" "${LOGROOT_LOCAL}"
-    echo "poudriere logs dir -> ${PKGDATA}/logs (host side)"
+    # The logs themselves stay in the VM: on the root-squashed export
+    # poudriere's chown of its HTML assets under logs/bulk/.html fails
+    # with "[ERROR] Unhandled error!" and the dry run dies before it
+    # writes the queue (round 7, run 33865909605: no seed anywhere, 260
+    # already-published packages rebuilt). What the runner needs when
+    # the VM dies mid-job is only the small .poudriere.ports.* status
+    # files; they are mirrored to the host every minute during bulk.
+    MIRROR="${PKGDATA}/logs/bulk/${JAIL}-${PORTS_TREE}/latest"
+    mkdir -p "${MIRROR}"
+    echo "poudriere status files mirrored to ${MIRROR} (host side)"
     # The export squashes the guest's root to the runner's uid, so a
     # chown to any other user on that mount is refused. poudriere's
     # package phase chowns its .npkg staging directory (on the package
@@ -224,6 +223,19 @@ BULK_PID=$!
     >/dev/null 2>&1 &
 WATCHDOG_PID=$!
 
+# Mirror the status files to the host while bulk runs (see MIRROR above).
+MIRROR_PID=""
+if [ -n "${MIRROR:-}" ]; then
+    (
+        while sleep 60; do
+            for f in "${LOGROOT}"/latest/.poudriere.ports.*; do
+                [ -f "$f" ] && cp -f "$f" "${MIRROR}/" 2>/dev/null
+            done
+        done
+    ) >/dev/null 2>&1 &
+    MIRROR_PID=$!
+fi
+
 wait "${BULK_PID}"
 BULK_RC=$?
 
@@ -231,6 +243,14 @@ BULK_RC=$?
 pkill -P "${WATCHDOG_PID}" 2>/dev/null
 kill "${WATCHDOG_PID}" 2>/dev/null
 wait "${WATCHDOG_PID}" 2>/dev/null
+if [ -n "${MIRROR_PID}" ]; then
+    pkill -P "${MIRROR_PID}" 2>/dev/null
+    kill "${MIRROR_PID}" 2>/dev/null
+    wait "${MIRROR_PID}" 2>/dev/null
+    for f in "${LOGROOT}"/latest/.poudriere.ports.*; do
+        [ -f "$f" ] && cp -f "$f" "${MIRROR}/" 2>/dev/null
+    done
+fi
 set -e
 BUILD_ELAPSED=$(( $(date +%s) - BUILD_STARTED ))
 echo "poudriere bulk exited ${BULK_RC} after ${BUILD_ELAPSED}s"
