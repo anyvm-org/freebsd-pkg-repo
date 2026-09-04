@@ -20,6 +20,12 @@ on:
   workflow_run:
     workflows: [Build]
     types: [completed]
+  # Safety net: if the run that should have reacted to a finished round
+  # itself failed (the API limit after round 9 did exactly that), look
+  # at the latest Build run every two hours and act on it as if it had
+  # just completed. Nothing happens while a run is still in progress.
+  schedule:
+    - cron: '17 */2 * * *'
   workflow_dispatch:
     inputs:
       run_id:
@@ -60,6 +66,17 @@ jobs:
           fi
           if [ "$DRY_RUN" = "true" ]; then
             gh() { if [ "$1" = run ] && [ "$2" = view ]; then command gh "$@"; else echo "dry run: gh $*" >&2; fi; }
+          fi
+          if [ -z "$RUN_ID" ]; then
+            # scheduled: take the latest Build run
+            latest=$(gh run list --repo "$R" --workflow build.yml --limit 1                        --json databaseId,status,conclusion,attempt                        --jq '.[0] | "\(.databaseId) \(.status) \(.conclusion // "") \(.attempt)"')
+            set -- $latest
+            RUN_ID="${1:-}"; status="${2:-}"; RUN_CONCLUSION="${3:-unknown}"; ATTEMPT="${4:-1}"
+            echo "scheduled check: latest Build run $RUN_ID is $status ($RUN_CONCLUSION), attempt $ATTEMPT"
+            if [ -z "$RUN_ID" ] || [ "$status" != "completed" ]; then
+              echo "nothing to do"
+              exit 0
+            fi
           fi
           if [ "$RUN_CONCLUSION" = "cancelled" ]; then
             echo "run $RUN_ID was cancelled; stopping the loop here"
