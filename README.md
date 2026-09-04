@@ -15,16 +15,17 @@ them as GitHub Release assets.
 
 ## Status
 
-**Bootstrap slice published on 2026-09-03.** Shard
-`pkg-FreeBSD-15-riscv64-000` holds the 115 packages of
-`config/pkglist.bootstrap` and its closure: `pkg`, `rsync`, `sshfs`,
-`bash`, `sudo`, `curl`, `git`, `python3` (3.12), `tree`, plus
-everything they pull in (perl, ruby, cmake, glib, ...), signed with the
-ECDSA key below. A real FreeBSD 15.1 riscv64 guest verifies the
+**Whole-tree build in progress since 2026-09-03.** Shard
+`pkg-FreeBSD-15-riscv64-000` holds 616 packages after four parallel
+rounds (2026-09-04): the bootstrap set (`pkg`, `rsync`, `sshfs`,
+`bash`, `sudo`, `curl`, `git`, `python3`, `tree` and their closure)
+plus the base layer of the tree (perl, ruby, cmake, glib, icu,
+binutils, gnutls, coreutils, gmp, ...). Everything is signed with the
+ECDSA key below, and a real FreeBSD 15.1 riscv64 guest verifies the
 signature with its shipped `pkg`, upgrades `pkg` from the shard and
-installs `rsync` from it. The slice took four resumed 4.5-hour jobs on
-the 4-core runner; every job seeded what the previous ones published
-and built only what was missing.
+installs `rsync` and `fusefs-sshfs` from it. About 27,000 ports remain
+pending; each round of 18 five-hour jobs adds what it can, and ports
+that do not fit a job are left for a bigger machine.
 
 ## Installing
 
