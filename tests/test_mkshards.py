@@ -168,5 +168,28 @@ class ConfTest(unittest.TestCase):
         self.assertIn("anyvm-000: {", conf)
 
 
+class RebuiltDuplicateTest(unittest.TestCase):
+
+    def test_rebuilt_published_package_touches_no_shard(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc",
+                                ["textproc/OpenSP", "sysutils/tree"])
+        first = mkshards.plan(led, {"textproc/OpenSP": "OpenSP-1.5.2_4.pkg"}, "t1")
+        self.assertEqual(sorted(first), [0])
+        # a later job rebuilds OpenSP unchanged and builds tree
+        second = mkshards.plan(led, {"textproc/OpenSP": "OpenSP-1.5.2_4.pkg",
+                                     "sysutils/tree": "tree-2.3.2.pkg"}, "t2")
+        self.assertEqual(list(second[0]["new"]), ["tree-2.3.2.pkg"])
+        self.assertNotIn("OpenSP-1.5.2_4.pkg", second[0]["new"])
+        self.assertIn("OpenSP-1.5.2_4.pkg", second[0]["existing"])
+        self.assertEqual(led["ports"]["textproc/OpenSP"]["built_at"], "t1")
+
+    def test_new_version_still_supersedes(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["textproc/OpenSP"])
+        mkshards.plan(led, {"textproc/OpenSP": "OpenSP-1.5.2_4.pkg"}, "t1")
+        spec = mkshards.plan(led, {"textproc/OpenSP": "OpenSP-1.5.2_5.pkg"}, "t2")
+        self.assertEqual(list(spec[0]["new"]), ["OpenSP-1.5.2_5.pkg"])
+        self.assertEqual(spec[0]["delete"], ["OpenSP-1.5.2_4.pkg"])
+
+
 if __name__ == "__main__":
     unittest.main()

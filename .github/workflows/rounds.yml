@@ -73,11 +73,13 @@ jobs:
           builds=$(grep -c $'^build (' jobs.tsv || true)
           echo "plan=$plan merge=$merge builds=$builds attempt=$ATTEMPT"
 
-          if [ "$plan" != "success" ]; then
+          # A merge-only run (Build dispatched with merge_run set) has no
+          # plan and no build jobs; its merge result alone decides.
+          if [ "$plan" != "success" ] && [ "$plan" != "skipped" ] && [ -n "$plan" ]; then
             echo "plan did not succeed ($plan); a person has to look"
             exit 0
           fi
-          if [ "$builds" -eq 0 ]; then
+          if [ "$plan" = "success" ] && [ "$builds" -eq 0 ]; then
             echo "no slice had work: the tree is done for this ABI, or everything left is ignored/oversize"
             exit 0
           fi

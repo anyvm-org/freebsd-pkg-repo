@@ -77,6 +77,22 @@ def plan(led, built, now, capacity=shard.SHARD_CAPACITY):
         if entry and entry.get("shard") is not None and entry.get("pkgfile"):
             previous[origin] = (entry["pkgfile"], entry["shard"])
 
+    # A job may rebuild a package that is already published under the
+    # same file name (its seed fetch failed, or poudriere decided to
+    # rebuild). That is not a new package: uploading it again would
+    # touch a possibly full, possibly old shard whose index cannot be
+    # regenerated without every one of its files (run 33865909605:
+    # "OpenSP-1.5.2_4.pkg is recorded in shard ...-000 but was not
+    # downloaded"). The published copy stays; the ledger is untouched.
+    duplicates = sorted(origin for origin in built
+                        if origin in previous
+                        and previous[origin][0] == safe_of[built[origin]])
+    if duplicates:
+        print("plan: %d rebuilt packages already published, kept as is: %s"
+              % (len(duplicates), " ".join(duplicates[:8])
+                 + (" ..." if len(duplicates) > 8 else "")))
+        built = dict((o, f) for o, f in built.items() if o not in duplicates)
+
     existing = {}
     for entry in led["ports"].values():
         if entry.get("shard") is not None and entry.get("pkgfile"):
@@ -140,6 +156,25 @@ def fatal(msg):
     sys.exit(1)
 
 
+def fetch_asset(url, dest, attempts=4):
+    """Download one release asset (GitHub answers with a redirect to its
+    CDN; urllib follows it). True on success."""
+    import time
+    import urllib.request
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response, \
+                    open(dest, "wb") as handle:
+                shutil.copyfileobj(response, handle)
+            if os.path.getsize(dest) > 0:
+                return True
+        except Exception as exc:  # network, HTTP, disk: retry, then fail
+            print("fetch %s failed (attempt %d/%d): %s" % (url, attempt, attempts, exc))
+        if attempt < attempts:
+            time.sleep(15)
+    return False
+
+
 def find_package(dirs, name):
     """First directory in dirs holding name, or None.
 
@@ -168,13 +203,26 @@ def execute(spec_by_shard, args):
             shutil.rmtree(stage)
         os.makedirs(stage)
 
+        missing = [safe for safe in spec["existing"]
+                   if not os.path.isfile(os.path.join(args.existing, tag, safe))]
+        if missing:
+            # An older shard touched by a superseded package: the runner
+            # only downloaded the open shard. Its index cannot be
+            # regenerated without every file, so fetch the rest here.
+            print("fetching %d published packages of %s not downloaded on the runner"
+                  % (len(missing), tag))
+            os.makedirs(os.path.join(args.existing, tag), exist_ok=True)
+            for safe in missing:
+                url = "https://github.com/%s/releases/download/%s/%s" % (
+                    args.repo, tag, safe)
+                dest = os.path.join(args.existing, tag, safe)
+                if not fetch_asset(url, dest):
+                    fatal("%s is recorded in shard %s, was not downloaded to %s "
+                          "and could not be fetched from %s"
+                          % (safe, tag, dest, url))
         for safe in spec["existing"]:
-            src = os.path.join(args.existing, tag, safe)
-            if not os.path.isfile(src):
-                fatal("%s is recorded in shard %s but was not downloaded to "
-                      "%s; the shard index cannot be regenerated without it"
-                      % (safe, tag, src))
-            shutil.copyfile(src, os.path.join(stage, safe))
+            shutil.copyfile(os.path.join(args.existing, tag, safe),
+                            os.path.join(stage, safe))
 
         for safe, original in spec["new"].items():
             src = find_package(args.packages, original)

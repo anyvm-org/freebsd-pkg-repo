@@ -26,6 +26,10 @@ on:
         description: 'Ledger states to put back to pending this round, comma-separated (e.g. failed, or failed,oversize); empty = none'
         required: false
         default: ''
+      merge_run:
+        description: 'Run id whose build artifacts to merge and publish instead of building (recover a round whose merge failed after a fix)'
+        required: false
+        default: ''
 
 # One round per ABI at a time. The merge job rewrites the ledger and the
 # open shard's index from the ledger the round fetched at ITS start, so
@@ -46,6 +50,7 @@ jobs:
   # into it, and hashes everything still pending into K slice files.
   # ---------------------------------------------------------------------
   plan:
+    if: inputs.merge_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -163,7 +168,7 @@ jobs:
   # ---------------------------------------------------------------------
   build:
     needs: plan
-    if: needs.plan.outputs.indices != '[]'
+    if: inputs.merge_run == '' && needs.plan.outputs.indices != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     strategy:
@@ -333,16 +338,28 @@ jobs:
   # ---------------------------------------------------------------------
   merge:
     needs: [plan, build]
-    if: always() && needs.plan.result == 'success' && needs.plan.outputs.indices != '[]'
+    if: always() && (inputs.merge_run != '' || (needs.plan.result == 'success' && needs.plan.outputs.indices != '[]'))
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
 
+      - name: Read the ABI row
+        id: abi
+        run: |
+          set -eu
+          row=$(grep -v '^#' config/abis | awk -v s='${{ inputs.abi_slug }}' '$1 == s {print; exit}')
+          test -n "$row"
+          major=$(echo "$row" | awk '{print $2}' | cut -d. -f1)
+          echo "abi=FreeBSD:${major}:$(echo "$row" | awk '{print $3}' | cut -d. -f2)" >> "$GITHUB_OUTPUT"
+
+      # With merge_run set, the artifacts come from that earlier run.
       - uses: actions/download-artifact@v8
         with:
           pattern: build-${{ inputs.abi_slug }}-*
           path: work/jobs
+          run-id: ${{ inputs.merge_run || github.run_id }}
+          github-token: ${{ github.token }}
 
       - name: Merge the job results
         run: |
@@ -394,7 +411,7 @@ jobs:
         uses: vmactions/freebsd-vm@v1
         env:
           ABI_SLUG: ${{ inputs.abi_slug }}
-          TARGET_ABI: ${{ needs.plan.outputs.abi }}
+          TARGET_ABI: ${{ steps.abi.outputs.abi }}
           REPO: ${{ github.repository }}
           PKGLIST: ${{ inputs.pkglist }}
           PKG_KEY_TYPE: ${{ env.PKG_KEY_TYPE }}
