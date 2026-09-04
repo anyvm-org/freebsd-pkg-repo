@@ -278,7 +278,24 @@ jobs:
         run: |
           set -eu
           mkdir -p out/pkgs
-          test -f out/result.json || { echo "no result.json (VM step failed before building)"; exit 0; }
+          # The VM may have died before vm_build.sh wrote its manifest
+          # (run 33841503080: "Timeout, server 127.0.0.1 not responding"
+          # after 4h40m of building). poudriere's log directory is on
+          # this runner as well, so the manifest can be written here.
+          LOGDIR="work/pkgdata/logs/bulk/${{ needs.plan.outputs.jail }}-default/latest"
+          if [ ! -f out/result.json ]; then
+            if [ -d "$LOGDIR" ]; then
+              echo "no result.json from the VM; deriving it from $LOGDIR"
+              PYTHONPATH=scripts python3 scripts/result.py --logdir "$LOGDIR" --out out/result.json
+              if [ -d "$LOGDIR/logs/errors" ]; then
+                mkdir -p out/faillogs
+                cp -L "$LOGDIR"/logs/errors/* out/faillogs/ 2>/dev/null || true
+              fi
+            else
+              echo "no result.json and no log directory (VM step failed before building)"
+              exit 0
+            fi
+          fi
           python3 - <<'PY'
           import json, os, shutil
           jail = "${{ needs.plan.outputs.jail }}"

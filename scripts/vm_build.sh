@@ -66,6 +66,17 @@ if [ -n "${PKGDATA:-}" ]; then
     fi
     ln -sfn "${PKGDATA}/packages" "${PKGROOT}"
     echo "poudriere packages dir -> ${PKGDATA}/packages (host side)"
+    # The build logs go to the host too: when the VM dies mid-job (run
+    # 33841503080, "Timeout, server 127.0.0.1 not responding"), the
+    # runner can still write result.json from .poudriere.ports.* and
+    # collect the packages this job built.
+    LOGROOT_LOCAL=/usr/local/poudriere/data/logs
+    mkdir -p "${PKGDATA}/logs"
+    if [ -d "${LOGROOT_LOCAL}" ] && [ ! -L "${LOGROOT_LOCAL}" ]; then
+        mv "${LOGROOT_LOCAL}" "${LOGROOT_LOCAL}.local.$(date +%s)"
+    fi
+    ln -sfn "${PKGDATA}/logs" "${LOGROOT_LOCAL}"
+    echo "poudriere logs dir -> ${PKGDATA}/logs (host side)"
     # The export squashes the guest's root to the runner's uid, so a
     # chown to any other user on that mount is refused. poudriere's
     # package phase chowns its .npkg staging directory (on the package
@@ -249,92 +260,7 @@ if [ "${BULK_RC}" -ne 0 ] && [ ! -d "${LOGDIR}" ]; then
     exit 1
 fi
 
-python3 - "${LOGDIR}" "${OUTDIR}/result.json" <<'PYEOF'
-import json
-import os
-import sys
-
-logdir, out = sys.argv[1], sys.argv[2]
-
-
-def column(name, index):
-    path = os.path.join(logdir, ".poudriere.ports." + name)
-    rows = []
-    if os.path.exists(path):
-        with open(path) as handle:
-            for line in handle:
-                fields = line.split()
-                if len(fields) > index:
-                    rows.append((fields[0], fields[index]))
-    return rows
-
-
-built = {}
-for origin, pkgname in column("built", 1):
-    built[origin] = pkgname + ".pkg"
-
-ignored = [origin for origin, _ in column("ignored", 1)]
-# A port skipped because an IGNORED port (not a failed one) is in its
-# dependency chain will be skipped every round for as long as that
-# port stays ignored; record it as ignored too, or it pends forever and
-# every round's dry run re-derives the same skip. The third column is
-# the root cause's package name (common.sh clean_pool).
-ignored_pkgnames = set(pkgname for _, pkgname in column("ignored", 1))
-for origin, cause in column("skipped", 2):
-    if cause in ignored_pkgnames and origin not in built:
-        ignored.append(origin)
-
-# ports.failed: originspec pkgname phase errortype elapsed (common.sh
-# 6935). A "timeout" is the phase limit on this runner, not a broken
-# port: binutils, icu and geos hit it in run 33765900942 and would have
-# been retired as failed after MAX_FAILURES while hundreds of ports wait
-# on them. They are oversize for this machine, to be built on a bigger
-# one, and the ledger keeps them out of the CI slices.
-failed = []
-oversize = {}
-for origin, errortype in column("failed", 3):
-    if errortype == "timeout":
-        oversize[origin] = "timeout on the CI runner"
-    else:
-        failed.append(origin)
-
-# A port whose build the deadline watchdog interrupted has a per-port
-# log with a "=>> Building" header and no "ended at" footer. Left alone
-# it is retried every round, burns the whole job each time and never
-# finishes; the ledger counts these and moves a port to oversize after
-# the second interruption.
-interrupted = []
-logs_dir = os.path.join(logdir, "logs")
-if os.path.isdir(logs_dir):
-    for name in sorted(os.listdir(logs_dir)):
-        if not name.endswith(".log"):
-            continue
-        path = os.path.join(logs_dir, name)
-        if os.path.islink(path) or not os.path.isfile(path):
-            continue
-        with open(path, errors="replace") as handle:
-            first = handle.readline().strip()
-            handle.seek(0, 2)
-            size = handle.tell()
-            handle.seek(max(0, size - 4096))
-            tail = handle.read()
-        if first.startswith("=>> Building ") and " ended at" not in tail:
-            origin = first[len("=>> Building "):].strip()
-            if origin and origin not in built and origin not in failed \
-                    and origin not in oversize:
-                interrupted.append(origin)
-
-result = {
-    "built": built,
-    "failed": failed,
-    "ignored": sorted(set(ignored)),
-    "oversize": oversize,
-    "interrupted": sorted(set(interrupted)),
-}
-with open(out, "w") as handle:
-    json.dump(result, handle, indent=2, sort_keys=True)
-print(json.dumps(dict((k, len(v)) for k, v in result.items())))
-PYEOF
+python3 "$(dirname "$0")/result.py" --logdir "${LOGDIR}" --out "${OUTDIR}/result.json"
 
 echo "result manifest written to ${OUTDIR}/result.json"
 
