@@ -13,19 +13,23 @@ name: Rounds
 #
 # A workflow_dispatch sent with GITHUB_TOKEN does start a new run (that
 # is the documented exception to "GITHUB_TOKEN events do not trigger
-# workflows"), and a completed run fires workflow_run whoever started it,
-# so the chain continues round after round.
+# workflows"). But the completion of a run that GITHUB_TOKEN started does
+# NOT fire workflow_run (round 10, the first round this workflow itself
+# dispatched, finished at 05:27 and no Rounds run followed), so with the
+# default token the schedule below is what actually carries the chain;
+# workflow_run only fires for rounds a person or a PUBLISH_TOKEN started.
 
 on:
   workflow_run:
     workflows: [Build]
     types: [completed]
-  # Safety net: if the run that should have reacted to a finished round
-  # itself failed (the API limit after round 9 did exactly that), look
-  # at the latest Build run every two hours and act on it as if it had
-  # just completed. Nothing happens while a run is still in progress.
+  # The regular driver (see above): look at the latest Build run and act
+  # on it as if it had just completed. Nothing happens while a run is
+  # still in progress, so the cost of a tick is a few seconds. GitHub
+  # often starts scheduled runs 10-20 minutes late; every 20 minutes
+  # keeps the idle gap between rounds under about half an hour.
   schedule:
-    - cron: '17 */2 * * *'
+    - cron: '*/20 * * * *'
   workflow_dispatch:
     inputs:
       run_id:
@@ -80,6 +84,15 @@ jobs:
           fi
           if [ "$RUN_CONCLUSION" = "cancelled" ]; then
             echo "run $RUN_ID was cancelled; stopping the loop here"
+            exit 0
+          fi
+          # Both the schedule and a late workflow_run can look at the same
+          # finished round. If a newer Build run already exists, whatever
+          # its state, that round was acted on: a second dispatch would
+          # queue a duplicate round that rebuilds the same slices.
+          newer=$(gh run list --repo "$R" --workflow build.yml --limit 5                     --json databaseId --jq '[.[].databaseId | select(. > ('"$RUN_ID"'))] | length')
+          if [ "${newer:-0}" -gt 0 ]; then
+            echo "run $RUN_ID already has $newer newer Build run(s); nothing to do"
             exit 0
           fi
           # GITHUB_TOKEN has 1,000 API requests per hour per repository and
