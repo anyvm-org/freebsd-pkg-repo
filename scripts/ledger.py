@@ -211,6 +211,20 @@ def requeue_tagged(led, requests):
     return sorted(changed)
 
 
+def note_merged_run(led, run_id):
+    """Record that a Build run's results went into this ledger, and
+    refuse a second time: re-merging a run whose merge already published
+    counts every failure and interruption in it twice (the merge-only run
+    of 33948710908 pushed four ports to oversize and one to failed that
+    way). Raises ValueError on a repeat."""
+    done = led.setdefault("merged_runs", [])
+    run_id = str(run_id)
+    if run_id in done:
+        raise ValueError("run %s was already merged into this ledger; "
+                         "re-merging would count its failures twice" % run_id)
+    done.append(run_id)
+
+
 def pending_origins(led):
     """Origins still waiting to be built, in a stable order."""
     return sorted(origin for origin, entry in led["ports"].items()

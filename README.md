@@ -210,6 +210,11 @@ Start a round by hand:
 gh workflow run build.yml --repo anyvm-org/freebsd-pkg-repo -f abi_slug=FreeBSD-15-riscv64 -f pkglist=config/pkglist.all -f slices=18 -f deadline=18000
 ```
 
+`-f merge_run=<run id>` re-merges the artifacts of an earlier run
+whose merge job failed before publishing. Do not point it at a run whose
+merge succeeded: its failures and interruptions would be counted twice
+(the ledger now records the runs it has absorbed and refuses a repeat).
+
 Add `-f requeue=failed` (or `failed,oversize`) to give retired ports
 another round, for example after adding a fixup.
 

@@ -429,19 +429,26 @@ jobs:
       # asked and the merge then dropped it as a "rebuilt duplicate").
       # Apply config/rebuild here as well: once per tag, so a request
       # already served (or a merge-only re-run) changes nothing.
-      - name: Apply config/rebuild to the ledger
+      # Also refuse to merge a run twice: a merge-only re-run of a run
+      # whose merge had already published counts every failure and
+      # interruption in it again (run 33963209861 re-merged 33948710908
+      # and pushed four ports to oversize and one to failed; repaired by
+      # hand). merge_run is for a run whose merge FAILED.
+      - name: Apply config/rebuild to the ledger; refuse a double merge
         run: |
           set -eu
           PYTHONPATH=scripts python3 - <<'PY'
           import json, os
           import ledger
           path = "work/ledger.json"
-          if not os.path.isfile(path) or not os.path.isfile("config/rebuild"):
+          if not os.path.isfile(path):
               raise SystemExit(0)
           led = json.load(open(path))
-          wanted = ledger.parse_rebuild_requests(open("config/rebuild").read())
-          tagged = ledger.requeue_tagged(led, wanted)
-          print("rebuild requested: %s" % (" ".join(tagged) or "nothing new"))
+          ledger.note_merged_run(led, "${{ inputs.merge_run || github.run_id }}")
+          if os.path.isfile("config/rebuild"):
+              wanted = ledger.parse_rebuild_requests(open("config/rebuild").read())
+              tagged = ledger.requeue_tagged(led, wanted)
+              print("rebuild requested: %s" % (" ".join(tagged) or "nothing new"))
           json.dump(led, open(path, "w"), indent=2, sort_keys=True)
           PY
 

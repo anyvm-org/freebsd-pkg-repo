@@ -273,6 +273,18 @@ class RequeueTaggedTest(unittest.TestCase):
         self.assertEqual(led["ports"]["graphics/poppler"]["state"], "failed")
 
 
+class MergedRunGuardTest(unittest.TestCase):
+
+    def test_second_merge_of_a_run_is_refused(self):
+        led = fresh()
+        ledger.note_merged_run(led, 33948710908)
+        self.assertEqual(led["merged_runs"], ["33948710908"])
+        with self.assertRaises(ValueError):
+            ledger.note_merged_run(led, "33948710908")
+        ledger.note_merged_run(led, 33963655663)
+        self.assertEqual(led["merged_runs"], ["33948710908", "33963655663"])
+
+
 class DoneTest(unittest.TestCase):
 
     def test_not_done_while_anything_pends(self):
