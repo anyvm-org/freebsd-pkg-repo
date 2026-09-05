@@ -84,9 +84,12 @@ def plan(led, built, now, capacity=shard.SHARD_CAPACITY):
     # regenerated without every one of its files (run 33865909605:
     # "OpenSP-1.5.2_4.pkg is recorded in shard ...-000 but was not
     # downloaded"). The published copy stays; the ledger is untouched.
+    # ... unless the ledger asked for exactly that (config/rebuild): the
+    # published file is wrong and the rebuilt one must take its place.
     duplicates = sorted(origin for origin in built
                         if origin in previous
-                        and previous[origin][0] == safe_of[built[origin]])
+                        and previous[origin][0] == safe_of[built[origin]]
+                        and not led["ports"][origin].get("rebuild"))
     if duplicates:
         print("plan: %d rebuilt packages already published, kept as is: %s"
               % (len(duplicates), " ".join(duplicates[:8])
@@ -112,6 +115,11 @@ def plan(led, built, now, capacity=shard.SHARD_CAPACITY):
         old = previous.get(origin)
         if old and old[1] == index and old[0] != safe:
             spec["delete"].append(old[0])
+        elif old and old[1] == index and led["ports"][origin].get("rebuild"):
+            # same name, same shard: the asset is deleted before the
+            # fresh file is uploaded, or the upload would skip it as
+            # "already there with the same size"
+            spec["delete"].append(old[0])
 
     for index, spec in result.items():
         gone = set(spec["delete"]) | set(spec["new"])
@@ -124,6 +132,7 @@ def plan(led, built, now, capacity=shard.SHARD_CAPACITY):
     for origin in built:
         entry = led["ports"][origin]
         entry["shard"] = assignments[safe_of[built[origin]]]
+        entry.pop("rebuild", None)
         # Sanitising is not reversible (',' and '+' both become '-'), and
         # poudriere looks for packages by their original file name, so
         # seeding a later build from published assets needs this kept.

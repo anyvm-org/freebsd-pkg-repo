@@ -139,6 +139,14 @@ jobs:
           ignored = ledger.mark_ignored(led, [b for b in black if b])
           states = [s.strip() for s in "${{ inputs.requeue }}".split(",") if s.strip()]
           requeued = ledger.requeue(led, states) if states else []
+          # config/rebuild: named ports to build again, once per tag,
+          # whatever their state; a published package gets replaced.
+          if os.path.isfile("config/rebuild"):
+              wanted = ledger.parse_rebuild_requests(open("config/rebuild").read())
+              tagged = ledger.requeue_tagged(led, wanted)
+              if tagged:
+                  print("rebuild requested: %s" % " ".join(tagged))
+              requeued += tagged
           json.dump(led, open(path, "w"), indent=2, sort_keys=True)
           pend = ledger.pending_origins(led)
           print("ledger: %d entries, %d re-keyed, %d queued from the list, "

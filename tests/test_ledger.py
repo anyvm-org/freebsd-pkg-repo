@@ -215,6 +215,64 @@ class RequeueTest(unittest.TestCase):
         self.assertEqual(led["ports"]["sysutils/tree"]["state"], "built")
 
 
+class RequeueTaggedTest(unittest.TestCase):
+
+    def ledger(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc",
+                                ["devel/icu", "graphics/poppler", "sysutils/tree",
+                                 "lang/python@py311"])
+        ledger.merge_result(led, {"built": {"devel/icu": "icu-76.1-1.pkg",
+                                            "sysutils/tree": "tree-2.3.2.pkg"}}, NOW)
+        led["ports"]["devel/icu"]["shard"] = 0
+        led["ports"]["sysutils/tree"]["shard"] = 0
+        for _ in range(ledger.MAX_FAILURES):
+            ledger.merge_result(led, {"failed": ["graphics/poppler"]}, NOW)
+        return led
+
+    def test_parse(self):
+        text = "# comment\ndevel/icu  icu-note-tag  # why\n\nbad\ngraphics/poppler t2\n"
+        self.assertEqual(ledger.parse_rebuild_requests(text),
+                         {"devel/icu": "icu-note-tag", "graphics/poppler": "t2"})
+
+    def test_published_package_is_flagged_for_replacement(self):
+        led = self.ledger()
+        changed = ledger.requeue_tagged(led, {"devel/icu": "t1"})
+        self.assertEqual(changed, ["devel/icu"])
+        entry = led["ports"]["devel/icu"]
+        self.assertEqual(entry["state"], "pending")
+        self.assertTrue(entry["rebuild"])
+        self.assertEqual(entry["pkgfile"], "icu-76.1-1.pkg")
+        self.assertEqual(entry["shard"], 0)
+        self.assertEqual(entry["rebuild_tag"], "t1")
+
+    def test_failed_port_comes_back_without_a_flag(self):
+        led = self.ledger()
+        ledger.requeue_tagged(led, {"graphics/poppler": "t1"})
+        entry = led["ports"]["graphics/poppler"]
+        self.assertEqual(entry["state"], "pending")
+        self.assertEqual(entry["fail_count"], 0)
+        self.assertNotIn("rebuild", entry)
+
+    def test_same_tag_is_served_once(self):
+        led = self.ledger()
+        ledger.requeue_tagged(led, {"devel/icu": "t1"})
+        ledger.merge_result(led, {"built": {"devel/icu": "icu-76.1-1.pkg"}}, NOW)
+        self.assertEqual(ledger.requeue_tagged(led, {"devel/icu": "t1"}), [])
+        self.assertEqual(led["ports"]["devel/icu"]["state"], "built")
+        self.assertEqual(ledger.requeue_tagged(led, {"devel/icu": "t2"}), ["devel/icu"])
+
+    def test_every_flavor_of_the_origin(self):
+        led = self.ledger()
+        self.assertEqual(ledger.requeue_tagged(led, {"lang/python": "t1"}),
+                         ["lang/python@py311"])
+
+    def test_untouched_ports_stay(self):
+        led = self.ledger()
+        ledger.requeue_tagged(led, {"devel/icu": "t1"})
+        self.assertEqual(led["ports"]["sysutils/tree"]["state"], "built")
+        self.assertEqual(led["ports"]["graphics/poppler"]["state"], "failed")
+
+
 class DoneTest(unittest.TestCase):
 
     def test_not_done_while_anything_pends(self):

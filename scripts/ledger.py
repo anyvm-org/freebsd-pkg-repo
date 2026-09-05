@@ -176,6 +176,41 @@ def requeue(led, states):
     return sorted(changed)
 
 
+def parse_rebuild_requests(text):
+    """config/rebuild: one "origin tag" per line, '#' comments. The tag
+    names the fix the rebuild is for; changing it asks for another
+    rebuild, keeping it means the request has been served."""
+    requests = {}
+    for line in text.splitlines():
+        fields = line.split("#", 1)[0].split()
+        if len(fields) >= 2:
+            requests[fields[0]] = fields[1]
+    return requests
+
+
+def requeue_tagged(led, requests):
+    """Put the listed origins (every flavor of them) back to pending
+    whatever their state, once per tag: a port whose published package
+    is wrong (devel/icu's manifest missed libicudata.so.76) or that
+    failed for a reason since fixed. An entry that already carries a
+    published package keeps pkgfile and shard and is flagged "rebuild",
+    so the merge replaces the asset instead of skipping the rebuilt
+    file as a duplicate. Returns the keys requeued."""
+    changed = []
+    for key, entry in led["ports"].items():
+        tag = requests.get(key.split("@", 1)[0])
+        if tag is None or entry.get("rebuild_tag") == tag:
+            continue
+        entry["state"] = STATE_PENDING
+        entry["fail_count"] = 0
+        entry["interrupt_count"] = 0
+        entry["rebuild_tag"] = tag
+        if entry.get("pkgfile") and entry.get("shard") is not None:
+            entry["rebuild"] = True
+        changed.append(key)
+    return sorted(changed)
+
+
 def pending_origins(led):
     """Origins still waiting to be built, in a stable order."""
     return sorted(origin for origin, entry in led["ports"].items()

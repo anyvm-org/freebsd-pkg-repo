@@ -191,5 +191,43 @@ class RebuiltDuplicateTest(unittest.TestCase):
         self.assertEqual(spec[0]["delete"], ["OpenSP-1.5.2_4.pkg"])
 
 
+class RequestedRebuildTest(unittest.TestCase):
+
+    def test_flagged_rebuild_replaces_the_published_file(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc",
+                                ["devel/icu", "sysutils/tree"])
+        mkshards.plan(led, {"devel/icu": "icu-76.1,1.pkg",
+                            "sysutils/tree": "tree-2.3.2.pkg"}, "t1")
+        ledger.requeue_tagged(led, {"devel/icu": "note-tag"})
+        spec = mkshards.plan(led, {"devel/icu": "icu-76.1,1.pkg"}, "t2")
+        self.assertEqual(sorted(spec), [0])
+        self.assertEqual(spec[0]["new"], {"icu-76.1-1.pkg": "icu-76.1,1.pkg"})
+        self.assertEqual(spec[0]["delete"], ["icu-76.1-1.pkg"])
+        self.assertEqual(spec[0]["existing"], ["tree-2.3.2.pkg"])
+        entry = led["ports"]["devel/icu"]
+        self.assertEqual(entry["state"], "built")
+        self.assertEqual(entry["built_at"], "t2")
+        self.assertEqual(entry["shard"], 0)
+        self.assertNotIn("rebuild", entry)
+
+    def test_rebuild_stays_in_its_shard_even_when_full(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc",
+                                ["devel/icu", "sysutils/tree", "shells/bash"])
+        mkshards.plan(led, {"devel/icu": "icu-76.1,1.pkg",
+                            "sysutils/tree": "tree-2.3.2.pkg"}, "t1", capacity=2)
+        ledger.requeue_tagged(led, {"devel/icu": "note-tag"})
+        spec = mkshards.plan(led, {"devel/icu": "icu-76.1,1.pkg",
+                                   "shells/bash": "bash-5.3.pkg"}, "t2", capacity=2)
+        self.assertEqual(sorted(spec), [0, 1])
+        self.assertEqual(list(spec[0]["new"]), ["icu-76.1-1.pkg"])
+        self.assertEqual(list(spec[1]["new"]), ["bash-5.3.pkg"])
+        self.assertEqual(led["ports"]["devel/icu"]["shard"], 0)
+
+    def test_unflagged_duplicate_is_still_skipped(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc", ["devel/icu"])
+        mkshards.plan(led, {"devel/icu": "icu-76.1,1.pkg"}, "t1")
+        self.assertEqual(mkshards.plan(led, {"devel/icu": "icu-76.1,1.pkg"}, "t2"), {})
+
+
 if __name__ == "__main__":
     unittest.main()

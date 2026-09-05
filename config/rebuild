@@ -1,0 +1,15 @@
+# Ports to build again although the ledger already resolved them: one
+# "origin tag" per line. The plan step puts every listed origin (all of
+# its flavors) back to pending once per tag, whatever its state, and a
+# port that already has a published package gets that asset replaced by
+# the rebuilt file. To ask for another rebuild later, change the tag.
+#
+# devel/icu: the package shipped libicudata.so.76 without listing it in
+# shlibs_provided (see config/ports-fixups.sh), so pkg refused to
+# install boost-libs and everything above it.
+devel/icu          icu-note-tag-2026-09-05
+# graphics/poppler failed three times on that missing shlib, never on
+# its own account.
+graphics/poppler   icu-note-tag-2026-09-05
+# devel/orc: compile error fixed by the patch in config/ports-fixups.sh.
+devel/orc          riscv-linux-guard-2026-09-05

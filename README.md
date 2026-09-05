@@ -197,6 +197,8 @@ removing repository"), which is the intended failure mode.
 | `scripts/seed.py` | Seeds poudriere's package directory from already-downloaded packages (single-job and local use; the matrix jobs seed themselves through `wantlist.py`). |
 | `scripts/vm_build.sh` | Runs inside the build VM: emulation, jail, blacklist, selective seed, poudriere. |
 | `config/blacklist` | Ports the runners never attempt. |
+| `config/rebuild` | Ports to build again, once per tag, even when the ledger has them built or failed. |
+| `config/ports-fixups.sh` | Edits to the ports tree before poudriere runs: workarounds for ports that cannot build under qemu-user as shipped. |
 | `config/pkglist.all` | The whole tree for riscv64, as poudriere's dry run queued it. |
 | `tests/` | Unit tests for the four pure modules. |
 
@@ -225,6 +227,25 @@ Progress is the ledger on the index release:
 ```
 gh release download idx-FreeBSD-15-riscv64 --repo anyvm-org/freebsd-pkg-repo -p ledger.json
 ```
+
+### Rebuilding a published package
+
+A package can be wrong without ever failing: round 10 found that
+`devel/icu` had shipped `libicudata.so.76` without listing it in the
+package's `shlibs_provided`, so `pkg` refused to install `boost-libs`
+and everything above it. The ledger's dedup would normally skip a
+rebuilt file of the same name. To replace it, list the port in
+`config/rebuild` with a tag naming the fix:
+
+```
+devel/icu          icu-note-tag-2026-09-05
+```
+
+The next plan puts every flavor of that origin back to pending,
+whatever its state (a `failed` port comes back with a clean count),
+and the merge deletes the old asset before uploading the rebuilt one
+into the same shard. The tag is remembered per port, so the line can
+stay; change the tag to ask for another rebuild.
 
 ## Development
 
