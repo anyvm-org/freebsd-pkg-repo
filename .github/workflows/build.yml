@@ -424,6 +424,27 @@ jobs:
             --workdir work \
             prepare --existing work/existing
 
+      # The plan job's requeues live in ITS copy of the ledger; this job
+      # starts from the published one (run 33948710908 rebuilt icu as
+      # asked and the merge then dropped it as a "rebuilt duplicate").
+      # Apply config/rebuild here as well: once per tag, so a request
+      # already served (or a merge-only re-run) changes nothing.
+      - name: Apply config/rebuild to the ledger
+        run: |
+          set -eu
+          PYTHONPATH=scripts python3 - <<'PY'
+          import json, os
+          import ledger
+          path = "work/ledger.json"
+          if not os.path.isfile(path) or not os.path.isfile("config/rebuild"):
+              raise SystemExit(0)
+          led = json.load(open(path))
+          wanted = ledger.parse_rebuild_requests(open("config/rebuild").read())
+          tagged = ledger.requeue_tagged(led, wanted)
+          print("rebuild requested: %s" % (" ".join(tagged) or "nothing new"))
+          json.dump(led, open(path, "w"), indent=2, sort_keys=True)
+          PY
+
       - name: Stage and sign the shards in a FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         env:

@@ -243,8 +243,10 @@ devel/icu          icu-note-tag-2026-09-05
 
 The next plan puts every flavor of that origin back to pending,
 whatever its state (a `failed` port comes back with a clean count),
-and the merge deletes the old asset before uploading the rebuilt one
-into the same shard. The tag is remembered per port, so the line can
+and the merge, which starts from the published ledger rather than the
+plan's copy, applies the same file before it looks at the results, then
+deletes the old asset before uploading the rebuilt one into the same
+shard. The tag is remembered per port, so the line can
 stay; change the tag to ask for another rebuild.
 
 ## Development
