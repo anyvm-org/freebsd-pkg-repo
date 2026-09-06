@@ -371,7 +371,10 @@ jobs:
   # ---------------------------------------------------------------------
   merge:
     needs: [plan, build]
-    if: always() && (inputs.merge_run != '' || (needs.plan.result == 'success' && needs.plan.outputs.indices != '[]'))
+    # not always(): that runs the merge after a CANCELLED round too, and
+    # round 17 (cancelled ten minutes in) then published a no-op merge
+    # and dispatched the next round on top of the one being started.
+    if: ${{ !cancelled() && (inputs.merge_run != '' || (needs.plan.result == 'success' && needs.plan.outputs.indices != '[]')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -558,6 +561,7 @@ jobs:
             out/anyvm.conf
             out/upload.json
             work/merged/result.json
+          if-no-files-found: warn
 
       # Chain the next round from here. Rounds (workflow_run + a 20-min
       # cron) stays as the fallback and handles merge re-runs, but a run
@@ -577,4 +581,3 @@ jobs:
             echo "dispatch failed (try $n); waiting 5 minutes"; sleep 300
           done
           echo "next round dispatched"
-          if-no-files-found: warn
