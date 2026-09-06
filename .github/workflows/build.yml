@@ -2,6 +2,8 @@ name: Build
 
 permissions:
   contents: write
+  # the merge job dispatches the next round
+  actions: write
 
 on:
   workflow_dispatch:
@@ -549,4 +551,23 @@ jobs:
             out/anyvm.conf
             out/upload.json
             work/merged/result.json
+
+      # Chain the next round from here. Rounds (workflow_run + a 20-min
+      # cron) stays as the fallback and handles merge re-runs, but a run
+      # that GITHUB_TOKEN dispatched fires no workflow_run and GitHub's
+      # cron ran 90 minutes late after round 15. Rounds skips a round it
+      # finds already dispatched, so both paths cannot queue two.
+      - name: Dispatch the next round
+        if: success() && vars.AUTO_ROUNDS != 'off'
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN || github.token }}
+        run: |
+          set -eu
+          n=0
+          until gh workflow run build.yml --repo '${{ github.repository }}' --ref main                   -f 'abi_slug=${{ inputs.abi_slug }}'                   -f pkglist=config/pkglist.all                   -f 'slices=${{ vars.SLICES || 18 }}'                   -f 'deadline=${{ vars.DEADLINE || 18000 }}'; do
+            n=$((n + 1))
+            if [ "$n" -ge 4 ]; then echo "could not dispatch the next round; Rounds will" >&2; exit 0; fi
+            echo "dispatch failed (try $n); waiting 5 minutes"; sleep 300
+          done
+          echo "next round dispatched"
           if-no-files-found: warn
