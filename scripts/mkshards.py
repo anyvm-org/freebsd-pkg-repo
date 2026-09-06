@@ -313,13 +313,16 @@ def main(argv=None):
                          for o, v in result.get("oversize", {}).items()),
         "interrupted": [ledger.canonical_origin(listed, o)
                         for o in result.get("interrupted", [])],
+        "skipped": dict((ledger.canonical_origin(listed, o),
+                         ledger.canonical_origin(listed, b) if "/" in b else b)
+                        for o, b in result.get("skipped", {}).items()),
     }
 
-    # failures / ignores / oversize first, then the built set via plan()
-    ledger.merge_result(led, {"failed": result["failed"],
-                              "ignored": result["ignored"],
-                              "oversize": result["oversize"],
-                              "interrupted": result["interrupted"]},
+    # failures / ignores / oversize / skips first, then the built set via
+    # plan(). Every key of the manifest goes in: rounds 16 and 18 carried
+    # ~3,900 skips each that this call used to leave out, so nothing was
+    # ever filed as blocked.
+    ledger.merge_result(led, dict((k, v) for k, v in result.items() if k != "built"),
                         args.now)
 
     os.makedirs(args.out, exist_ok=True)
