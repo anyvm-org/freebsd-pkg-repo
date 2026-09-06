@@ -65,14 +65,23 @@ def manifest(logdir):
         built[origin] = pkgname + ".pkg"
 
     ignored = [origin for origin, _ in column(logdir, "ignored", 1)]
-    # A port skipped because an IGNORED port (not a failed one) is in
-    # its dependency chain will be skipped every round for as long as
-    # that port stays ignored; record it as ignored too, or it pends
-    # forever and every round's dry run re-derives the same skip.
-    ignored_pkgnames = set(pkgname for _, pkgname in column(logdir, "ignored", 1))
+
+    # A skipped port has an ignored or failed port somewhere in its
+    # dependency chain. poudriere names the cause by package name; map
+    # it back to the origin through this job's ignored and failed
+    # columns so the ledger can watch that port and release the
+    # dependents once it is built. Until then they are "blocked", not
+    # pending: listing them again just re-derives the same skip and,
+    # worse, drags the blocker back in as a dependency (round 15 spent
+    # four builders per job on grpc timing out, 114 packages in all).
+    origin_of = {}
+    for name in ("ignored", "failed"):
+        for origin, pkgname in column(logdir, name, 1):
+            origin_of.setdefault(pkgname, origin)
+    skipped = {}
     for origin, cause in column(logdir, "skipped", 2):
-        if cause in ignored_pkgnames and origin not in built:
-            ignored.append(origin)
+        if origin not in built:
+            skipped[origin] = origin_of.get(cause, cause)
 
     # A "timeout" is the phase limit on this machine, not a broken port:
     # oversize, to be built on a bigger one.
@@ -91,6 +100,7 @@ def manifest(logdir):
         "ignored": sorted(set(ignored)),
         "oversize": oversize,
         "interrupted": interrupted_ports(logdir, exclude),
+        "skipped": skipped,
     }
 
 

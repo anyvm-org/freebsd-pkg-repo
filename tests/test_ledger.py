@@ -285,6 +285,70 @@ class MergedRunGuardTest(unittest.TestCase):
         self.assertEqual(led["merged_runs"], ["33948710908", "33963655663"])
 
 
+class BlockedTest(unittest.TestCase):
+
+    def ledger(self):
+        led = ledger.new_ledger("FreeBSD:15:riscv64", "abc",
+                                ["devel/grpc", "net/a", "net/b", "sysutils/tree",
+                                 "devel/llvm20@lite"])
+        ledger.merge_result(led, {"built": {"sysutils/tree": "tree-2.3.2.pkg"},
+                                  "oversize": {"devel/grpc": "timeout"}}, NOW)
+        return led
+
+    def test_skipped_pending_ports_become_blocked(self):
+        led = self.ledger()
+        ledger.merge_result(led, {"skipped": {"net/a": "devel/grpc",
+                                              "sysutils/tree": "devel/grpc",
+                                              "net/b": "grpc-1.83.0_1,2"}}, NOW)
+        self.assertEqual(led["ports"]["net/a"]["state"], "blocked")
+        self.assertEqual(led["ports"]["net/a"]["blocked_by"], "devel/grpc")
+        self.assertEqual(led["ports"]["net/b"]["blocked_by"], "grpc-1.83.0_1,2")
+        self.assertEqual(led["ports"]["sysutils/tree"]["state"], "built")
+        self.assertEqual(ledger.pending_origins(led), ["devel/llvm20@lite"])
+
+    def test_blocker_origin_is_canonicalised(self):
+        led = self.ledger()
+        ledger.merge_result(led, {"skipped": {"net/a": "devel/llvm20@lite"}}, NOW,
+                            listed=["devel/llvm20@lite", "net/a"])
+        self.assertEqual(led["ports"]["net/a"]["blocked_by"], "devel/llvm20@lite")
+
+    def test_unblock_when_the_blocker_is_built_or_pending_again(self):
+        led = self.ledger()
+        ledger.merge_result(led, {"skipped": {"net/a": "devel/grpc",
+                                              "net/b": "grpc-1.83.0_1,2"}}, NOW)
+        self.assertEqual(ledger.unblock(led), [])
+        ledger.merge_result(led, {"built": {"devel/grpc": "grpc-1.83.0_1-2.pkg"}}, NOW)
+        self.assertEqual(ledger.unblock(led), ["net/a"])
+        self.assertEqual(led["ports"]["net/a"]["state"], "pending")
+        self.assertNotIn("blocked_by", led["ports"]["net/a"])
+        self.assertEqual(led["ports"]["net/b"]["state"], "blocked")
+
+    def test_unblock_after_a_requeue_of_the_blocker(self):
+        led = self.ledger()
+        ledger.merge_result(led, {"skipped": {"net/a": "devel/grpc"}}, NOW)
+        ledger.requeue(led, ["oversize"])
+        self.assertEqual(ledger.unblock(led), ["net/a"])
+
+    def test_requeue_blocked_is_the_manual_release(self):
+        led = self.ledger()
+        ledger.merge_result(led, {"skipped": {"net/b": "grpc-1.83.0_1,2"}}, NOW)
+        self.assertEqual(ledger.requeue(led, ["blocked"]), ["net/b"])
+        self.assertEqual(led["ports"]["net/b"]["state"], "pending")
+
+    def test_parked_origins_are_oversize_and_failed_bare(self):
+        led = self.ledger()
+        for _ in range(ledger.MAX_FAILURES):
+            ledger.merge_result(led, {"failed": ["devel/llvm20@lite"]}, NOW)
+        self.assertEqual(ledger.parked_origins(led), ["devel/grpc", "devel/llvm20"])
+
+    def test_release_ignored_keeps_the_blacklist_itself(self):
+        led = self.ledger()
+        ledger.merge_result(led, {"ignored": ["devel/llvm20@lite", "net/a", "net/b"]}, NOW)
+        self.assertEqual(ledger.release_ignored(led, ["devel/llvm20"]), ["net/a", "net/b"])
+        self.assertEqual(led["ports"]["devel/llvm20@lite"]["state"], "ignored")
+        self.assertEqual(led["ports"]["net/a"]["state"], "pending")
+
+
 class DoneTest(unittest.TestCase):
 
     def test_not_done_while_anything_pends(self):

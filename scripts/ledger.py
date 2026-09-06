@@ -11,6 +11,8 @@ STATE_BUILT = "built"
 STATE_FAILED = "failed"
 STATE_IGNORED = "ignored"
 STATE_OVERSIZE = "oversize"
+# waiting on a port that is ignored, oversize or failed; not sliced
+STATE_BLOCKED = "blocked"
 
 MAX_FAILURES = 3
 MAX_INTERRUPTIONS = 2
@@ -146,7 +148,61 @@ def merge_result(led, result, now, listed=None):
         entry["interrupt_count"] = entry.get("interrupt_count", 0) + 1
         if entry["interrupt_count"] >= MAX_INTERRUPTIONS:
             entry["state"] = STATE_OVERSIZE
+    # Skipped: an ignored, oversize or failed port is in the chain. Park
+    # the dependent until unblock() sees that port built (or pending
+    # again); listing it every round only drags the blocker back in.
+    for origin, blocker in result.get("skipped", {}).items():
+        entry = _entry(ports, key(origin))
+        if entry["state"] != STATE_PENDING:
+            continue
+        entry["state"] = STATE_BLOCKED
+        entry["blocked_by"] = key(blocker) if "/" in blocker else blocker
     return led
+
+
+def unblock(led):
+    """Release blocked entries whose blocker is built or pending again
+    (a bigger machine delivered it, or it was requeued). A blocker the
+    ledger does not know (a bare package name) keeps its dependents
+    blocked; "requeue=blocked" is the manual way out. Returns keys."""
+    ports = led["ports"]
+    changed = []
+    for key, entry in ports.items():
+        if entry.get("state") != STATE_BLOCKED:
+            continue
+        blocker = ports.get(entry.get("blocked_by"))
+        if blocker is None and entry.get("blocked_by", "").count("@"):
+            blocker = ports.get(entry["blocked_by"].split("@", 1)[0])
+        if blocker is None or blocker["state"] not in (STATE_BUILT, STATE_PENDING):
+            continue
+        entry["state"] = STATE_PENDING
+        entry.pop("blocked_by", None)
+        changed.append(key)
+    return sorted(changed)
+
+
+def release_ignored(led, blacklist):
+    """Before result.py reported skips separately, a port skipped because
+    a blacklisted giant was in its chain was recorded as ignored itself.
+    Give every ignored entry that is not on the blacklist back to
+    pending; the next dry run re-derives the skip and merge_result files
+    it as blocked with its blocker named. Returns keys."""
+    bare = set(o.split("@", 1)[0] for o in blacklist)
+    changed = []
+    for key, entry in led["ports"].items():
+        if entry.get("state") == STATE_IGNORED and key.split("@", 1)[0] not in bare:
+            entry["state"] = STATE_PENDING
+            changed.append(key)
+    return sorted(changed)
+
+
+def parked_origins(led):
+    """Bare origins the runner must IGNORE: oversize or failed here, so
+    that poudriere skips their dependents instead of building the
+    blocker again as a dependency (grpc timed out in four jobs of round
+    15 at once, 4h53m each)."""
+    return sorted(set(key.split("@", 1)[0] for key, entry in led["ports"].items()
+                      if entry.get("state") in (STATE_OVERSIZE, STATE_FAILED)))
 
 
 def mark_ignored(led, origins):

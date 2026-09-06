@@ -165,6 +165,14 @@ removing repository"), which is the intended failure mode.
   the real build then unqueues those and builds only what nobody has
   built yet. Two jobs may still build the same not-yet-published
   dependency in one round; `merge` keeps one copy.
+- A port skipped because an ignored, oversize or failed port is in its
+  dependency chain is recorded as `blocked` with the blocker's origin,
+  and leaves the slices. Each plan releases blocked ports whose blocker
+  has since been built (or requeued), and hands the runners the list of
+  oversize and failed ports to IGNORE, so a job skips a whole subtree in
+  seconds instead of rebuilding the blocker as a dependency: round 15
+  spent four builders per job on `devel/grpc` timing out, and produced
+  114 packages from 18 jobs. `-f requeue=blocked` is the manual release.
 - `config/blacklist` keeps the runners off ports that cannot finish in a
   6-hour job under emulation (llvm, gcc, openjdk, ghc, go, libreoffice,
   mongodb). Those are built on a bigger machine and published through

@@ -38,10 +38,17 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(merged["failed"], ["a/a", "z/z"])
         self.assertEqual(merged["ignored"], ["b/b", "m/m"])
 
+    def test_skipped_is_unioned_and_yields_to_built(self):
+        merged, _ = merge.merge_results([
+            ("j1", {"skipped": {"a/b": "devel/grpc", "c/d": "devel/grpc"}}),
+            ("j2", {"built": {"c/d": "d-1.pkg"}, "skipped": {"a/b": "x/y", "e/f": "x/y"}}),
+        ])
+        self.assertEqual(merged["skipped"], {"a/b": "devel/grpc", "e/f": "x/y"})
+
     def test_empty_input(self):
         merged, supplier = merge.merge_results([])
         self.assertEqual(merged, {"built": {}, "failed": [], "ignored": [],
-                                  "oversize": {}, "interrupted": []})
+                                  "oversize": {}, "interrupted": [], "skipped": {}})
         self.assertEqual(supplier, {})
 
     def test_interrupted_yields_to_built_or_oversize_elsewhere(self):

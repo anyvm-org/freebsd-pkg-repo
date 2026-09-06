@@ -40,9 +40,21 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(m["built"], {"sysutils/tree": "tree-2.3.2.pkg"})
         self.assertEqual(m["failed"], ["databases/sqlite3"])
         self.assertEqual(m["oversize"], {"devel/icu": "timeout on the CI runner"})
-        # mesa-libs was skipped by an ignored port: ignored; x/y by a
-        # failed one: stays pending (not listed anywhere)
-        self.assertEqual(m["ignored"], ["devel/llvm20", "graphics/mesa-libs"])
+        # skipped ports name their blocker by origin when this job's
+        # ignored/failed columns know the package, else by package name
+        self.assertEqual(m["ignored"], ["devel/llvm20"])
+        self.assertEqual(m["skipped"], {"graphics/mesa-libs": "devel/llvm20",
+                                        "x/y": "databases/sqlite3"})
+
+    def test_skipped_by_a_port_this_job_did_not_see_keeps_the_pkgname(self):
+        self.write("skipped", "a/b b-1 grpc-1.83.0_1,2\n")
+        m = result.manifest(self.logdir)
+        self.assertEqual(m["skipped"], {"a/b": "grpc-1.83.0_1,2"})
+
+    def test_a_built_port_is_never_reported_skipped(self):
+        self.write("built", "a/b b-1 13\n")
+        self.write("skipped", "a/b b-1 grpc-1.83.0_1,2\n")
+        self.assertEqual(result.manifest(self.logdir)["skipped"], {})
 
     def test_interrupted_is_a_log_without_a_footer(self):
         self.write("built", "sysutils/tree tree-2.3.2 13\n")
@@ -56,7 +68,7 @@ class ManifestTest(unittest.TestCase):
     def test_empty_logdir_gives_an_empty_manifest(self):
         m = result.manifest(self.logdir)
         self.assertEqual(m, {"built": {}, "failed": [], "ignored": [],
-                             "oversize": {}, "interrupted": []})
+                             "oversize": {}, "interrupted": [], "skipped": {}})
 
 
 if __name__ == "__main__":

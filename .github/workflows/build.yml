@@ -23,7 +23,7 @@ on:
         required: false
         default: '18000'
       requeue:
-        description: 'Ledger states to put back to pending this round, comma-separated (e.g. failed, or failed,oversize); empty = none'
+        description: 'Ledger states to put back to pending this round, comma-separated (failed, oversize, blocked); empty = none'
         required: false
         default: ''
       merge_run:
@@ -147,12 +147,24 @@ jobs:
               if tagged:
                   print("rebuild requested: %s" % " ".join(tagged))
               requeued += tagged
+          # Dependents of a parked port are "blocked", not pending: they
+          # leave the slices until unblock() sees the blocker built. The
+          # runner IGNOREs the parked ports themselves (work/blocked.txt)
+          # so poudriere skips the dependents instead of building the
+          # blocker again as a dependency.
+          released = ledger.release_ignored(led, [b for b in black if b])
+          unblocked = ledger.unblock(led)
+          parked = ledger.parked_origins(led)
+          open("work/blocked.txt", "w").write("".join(o + "\n" for o in parked))
           json.dump(led, open(path, "w"), indent=2, sort_keys=True)
           pend = ledger.pending_origins(led)
+          blocked = sum(1 for e in led["ports"].values() if e.get("state") == "blocked")
           print("ledger: %d entries, %d re-keyed, %d queued from the list, "
-                "%d blacklisted, %d requeued (%s), %d pending"
+                "%d blacklisted, %d requeued (%s), %d released from ignored, "
+                "%d unblocked, %d parked, %d blocked, %d pending"
                 % (len(led["ports"]), len(moved), len(added), len(ignored),
-                   len(requeued), ",".join(states) or "-", len(pend)))
+                   len(requeued), ",".join(states) or "-", len(released),
+                   len(unblocked), len(parked), blocked, len(pend)))
           PY
           K='${{ inputs.slices }}'
           PYTHONPATH=scripts python3 scripts/slice.py --ledger work/ledger.json --slices "$K" --count
@@ -174,6 +186,7 @@ jobs:
           name: plan-${{ inputs.abi_slug }}
           path: |
             work/ledger.json
+            work/blocked.txt
             work/slices/
           if-no-files-found: error
 
@@ -241,6 +254,7 @@ jobs:
           PKGDATA: ${{ github.workspace }}/work/pkgdata
           LEDGER: ${{ github.workspace }}/work/ledger.json
           BLACKLIST: ${{ github.workspace }}/config/blacklist
+          BLOCKED: ${{ github.workspace }}/work/blocked.txt
         with:
           # Major-version prefix: freebsd-vm resolves it to the newest
           # matching release ("Only the leading, '.' separated part of it is
@@ -261,7 +275,7 @@ jobs:
           # values below are spelled out literally: with them only in envs,
           # every ABI would share one prepared image.
           cache-after-prepare: true
-          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL SLICE_INDEX BUILD_DEADLINE REPO PKGDATA LEDGER BLACKLIST'
+          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL SLICE_INDEX BUILD_DEADLINE REPO PKGDATA LEDGER BLACKLIST BLOCKED'
           prepare: |
             # cache key material -- abi=${{ inputs.abi_slug }} version=${{ needs.plan.outputs.version }} arch=${{ needs.plan.outputs.arch }} jail=${{ needs.plan.outputs.jail }}
             # prepare-epoch: 1  (bump to force a fresh jail and ports tree)
