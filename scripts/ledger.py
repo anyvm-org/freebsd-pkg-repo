@@ -134,8 +134,15 @@ def merge_result(led, result, now, listed=None):
         entry["state"] = (STATE_FAILED
                           if entry["fail_count"] >= MAX_FAILURES
                           else STATE_PENDING)
+    # Ignored: the ports framework said so, or the runner's make.conf
+    # did for a blacklisted or parked port. Only a pending (or blocked)
+    # entry takes the state; a built, oversize or failed one keeps what
+    # it earned (round 16 turned grpc from oversize into ignored, and
+    # the next plan then no longer parked it).
     for origin in result.get("ignored", []):
-        _entry(ports, key(origin))["state"] = STATE_IGNORED
+        entry = _entry(ports, key(origin))
+        if entry["state"] in (STATE_PENDING, STATE_BLOCKED):
+            entry["state"] = STATE_IGNORED
     for origin in result.get("oversize", {}):
         _entry(ports, key(origin))["state"] = STATE_OVERSIZE
     # A build the job's deadline cut short. Once may be bad luck (the
@@ -190,9 +197,17 @@ def release_ignored(led, blacklist):
     bare = set(o.split("@", 1)[0] for o in blacklist)
     changed = []
     for key, entry in led["ports"].items():
-        if entry.get("state") == STATE_IGNORED and key.split("@", 1)[0] not in bare:
+        if entry.get("state") != STATE_IGNORED or key.split("@", 1)[0] in bare:
+            continue
+        # an entry that had earned failed/oversize before a round's
+        # IGNORE relabelled it goes back to that, not to pending
+        if entry.get("fail_count", 0) >= MAX_FAILURES:
+            entry["state"] = STATE_FAILED
+        elif entry.get("interrupt_count", 0) >= MAX_INTERRUPTIONS:
+            entry["state"] = STATE_OVERSIZE
+        else:
             entry["state"] = STATE_PENDING
-            changed.append(key)
+        changed.append(key)
     return sorted(changed)
 
 

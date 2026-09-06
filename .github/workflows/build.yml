@@ -465,6 +465,13 @@ jobs:
               wanted = ledger.parse_rebuild_requests(open("config/rebuild").read())
               tagged = ledger.requeue_tagged(led, wanted)
               print("rebuild requested: %s" % (" ".join(tagged) or "nothing new"))
+          # Same normalisation the plan did on ITS copy: entries recorded
+          # as ignored for a blacklisted dependency go back to pending
+          # here too, or the skips this round reports find them ignored
+          # and file nothing (round 16: 3,885 skipped, 0 blocked).
+          black = [l.split("#")[0].strip() for l in open("config/blacklist")]
+          released = ledger.release_ignored(led, [b for b in black if b])
+          print("released from ignored: %d" % len(released))
           json.dump(led, open(path, "w"), indent=2, sort_keys=True)
           PY
 

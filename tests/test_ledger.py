@@ -341,6 +341,24 @@ class BlockedTest(unittest.TestCase):
             ledger.merge_result(led, {"failed": ["devel/llvm20@lite"]}, NOW)
         self.assertEqual(ledger.parked_origins(led), ["devel/grpc", "devel/llvm20"])
 
+    def test_ignored_never_demotes_built_oversize_or_failed(self):
+        led = self.ledger()
+        for _ in range(ledger.MAX_FAILURES):
+            ledger.merge_result(led, {"failed": ["net/a"]}, NOW)
+        ledger.merge_result(led, {"ignored": ["devel/grpc", "net/a", "sysutils/tree", "net/b"]}, NOW)
+        self.assertEqual(led["ports"]["devel/grpc"]["state"], "oversize")
+        self.assertEqual(led["ports"]["net/a"]["state"], "failed")
+        self.assertEqual(led["ports"]["sysutils/tree"]["state"], "built")
+        self.assertEqual(led["ports"]["net/b"]["state"], "ignored")
+
+    def test_release_ignored_restores_earned_failed_and_oversize(self):
+        led = self.ledger()
+        led["ports"]["net/a"].update({"state": "ignored", "fail_count": 6})
+        led["ports"]["net/b"].update({"state": "ignored", "interrupt_count": 2})
+        self.assertEqual(ledger.release_ignored(led, []), ["net/a", "net/b"])
+        self.assertEqual(led["ports"]["net/a"]["state"], "failed")
+        self.assertEqual(led["ports"]["net/b"]["state"], "oversize")
+
     def test_release_ignored_keeps_the_blacklist_itself(self):
         led = self.ledger()
         ledger.merge_result(led, {"ignored": ["devel/llvm20@lite", "net/a", "net/b"]}, NOW)
