@@ -184,6 +184,25 @@ def fetch_asset(url, dest, attempts=4):
     return False
 
 
+# GitHub refuses a release asset of 2 GiB or more ("size must be less
+# than 2147483648"); round 19's merge died on texlive-docs-20250308.pkg
+# and 99 packages behind it in the batch queue never went up.
+ASSET_LIMIT = 2147483648
+
+
+def too_large(built, dirs, limit=ASSET_LIMIT):
+    """{origin: reason} for built packages whose file cannot be a release
+    asset. They are taken out of the built set and recorded oversize, so
+    the ledger parks them like a port that does not fit the machine."""
+    large = {}
+    for origin, pkgfile in sorted(built.items()):
+        src = find_package(dirs, pkgfile)
+        if src is not None and os.path.getsize(src) >= limit:
+            large[origin] = ("%s is %d bytes; GitHub release assets must be under %d"
+                             % (pkgfile, os.path.getsize(src), limit))
+    return large
+
+
 def find_package(dirs, name):
     """First directory in dirs holding name, or None.
 
@@ -317,6 +336,12 @@ def main(argv=None):
                          ledger.canonical_origin(listed, b) if "/" in b else b)
                         for o, b in result.get("skipped", {}).items()),
     }
+
+    large = too_large(result["built"], args.packages)
+    for origin, reason in large.items():
+        print("oversize: %s" % reason)
+        result["oversize"][origin] = reason
+        result["built"].pop(origin)
 
     # failures / ignores / oversize / skips first, then the built set via
     # plan(). Every key of the manifest goes in: rounds 16 and 18 carried

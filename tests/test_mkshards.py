@@ -131,6 +131,24 @@ class FindPackageTest(unittest.TestCase):
             os.path.join(self.building, "b-1.pkg"))
 
 
+class TooLargeTest(unittest.TestCase):
+
+    def test_files_at_or_over_the_limit_are_reported(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            small = os.path.join(tmp, "tree-2.3.2.pkg"); open(small, "wb").write(b"x" * 10)
+            big = os.path.join(tmp, "texlive-docs-20250308.pkg"); open(big, "wb").write(b"x" * 64)
+            built = {"sysutils/tree": "tree-2.3.2.pkg",
+                     "print/texlive-docs": "texlive-docs-20250308.pkg",
+                     "x/missing": "missing-1.pkg"}
+            large = mkshards.too_large(built, [tmp], limit=64)
+            self.assertEqual(list(large), ["print/texlive-docs"])
+            self.assertIn("64 bytes", large["print/texlive-docs"])
+            self.assertEqual(mkshards.too_large(built, [tmp], limit=65), {})
+        finally:
+            shutil.rmtree(tmp)
+
+
 class KeyArgumentTest(unittest.TestCase):
 
     def test_prefix_is_always_explicit(self):
