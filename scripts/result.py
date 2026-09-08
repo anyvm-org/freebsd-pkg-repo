@@ -32,6 +32,23 @@ def column(logdir, name, index):
     return rows
 
 
+def ignore_reasons(logdir):
+    """origin -> the reason text poudriere logged for an ignored port
+    (everything after the package name). The ledger uses it to tell a
+    port the ports framework refuses on this platform ("does not build
+    on riscv64") from one our make.conf parked or blacklisted: only the
+    latter come back when the blocker changes."""
+    path = os.path.join(logdir, ".poudriere.ports.ignored")
+    reasons = {}
+    if os.path.exists(path):
+        with open(path) as handle:
+            for line in handle:
+                fields = line.split(None, 2)
+                if len(fields) >= 2:
+                    reasons[fields[0]] = fields[2].strip() if len(fields) > 2 else ""
+    return reasons
+
+
 def interrupted_ports(logdir, exclude):
     """Origins whose per-port log has a "=>> Building" header and no
     "ended at" footer: the deadline watchdog (or a dead VM) cut them
@@ -65,6 +82,7 @@ def manifest(logdir):
         built[origin] = pkgname + ".pkg"
 
     ignored = [origin for origin, _ in column(logdir, "ignored", 1)]
+    reasons = ignore_reasons(logdir)
 
     # A skipped port has an ignored or failed port somewhere in its
     # dependency chain. poudriere names the cause by package name; map
@@ -101,6 +119,7 @@ def manifest(logdir):
         "oversize": oversize,
         "interrupted": interrupted_ports(logdir, exclude),
         "skipped": skipped,
+        "ignore_reasons": reasons,
     }
 
 

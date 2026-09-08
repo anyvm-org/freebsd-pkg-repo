@@ -335,6 +335,8 @@ def main(argv=None):
         "skipped": dict((ledger.canonical_origin(listed, o),
                          ledger.canonical_origin(listed, b) if "/" in b else b)
                         for o, b in result.get("skipped", {}).items()),
+        "ignore_reasons": dict((ledger.canonical_origin(listed, o), r)
+                               for o, r in result.get("ignore_reasons", {}).items()),
     }
 
     large = too_large(result["built"], args.packages)

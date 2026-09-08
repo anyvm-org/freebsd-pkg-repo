@@ -30,6 +30,7 @@ def merge_results(results):
     oversize = {}
     interrupted = set()
     skipped = {}
+    reasons = {}
     for name, result in results:
         for origin, pkgfile in sorted(result.get("built", {}).items()):
             if origin in built:
@@ -43,6 +44,8 @@ def merge_results(results):
         interrupted.update(result.get("interrupted", []))
         for origin, blocker in result.get("skipped", {}).items():
             skipped.setdefault(origin, blocker)
+        for origin, reason in result.get("ignore_reasons", {}).items():
+            reasons.setdefault(origin, reason)
     failed = sorted(o for o in failed if o not in built)
     ignored = sorted(o for o in ignored if o not in built)
     oversize = dict((o, r) for o, r in oversize.items() if o not in built)
@@ -51,9 +54,10 @@ def merge_results(results):
     interrupted = sorted(o for o in interrupted
                          if o not in built and o not in oversize)
     skipped = dict((o, b) for o, b in skipped.items() if o not in built)
+    reasons = dict((o, r) for o, r in reasons.items() if o in ignored)
     merged = {"built": built, "failed": failed, "ignored": ignored,
               "oversize": oversize, "interrupted": interrupted,
-              "skipped": skipped}
+              "skipped": skipped, "ignore_reasons": reasons}
     return merged, supplier
 
 

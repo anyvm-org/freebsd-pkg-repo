@@ -359,6 +359,19 @@ class BlockedTest(unittest.TestCase):
         self.assertEqual(led["ports"]["net/a"]["state"], "failed")
         self.assertEqual(led["ports"]["net/b"]["state"], "oversize")
 
+    def test_framework_ignored_ports_are_not_released(self):
+        led = self.ledger()
+        ledger.merge_result(led, {"ignored": ["net/a", "net/b", "devel/llvm20@lite"],
+                                  "ignore_reasons": {
+                                      "net/a": "does not build on riscv64",
+                                      "net/b": "parked by the ledger: oversize or failed on the CI runner"}},
+                            NOW)
+        self.assertEqual(led["ports"]["net/a"]["ignore_reason"], "does not build on riscv64")
+        # net/a: the framework's verdict, stays; net/b: our parking, and a
+        # legacy entry without a reason: both released
+        self.assertEqual(ledger.release_ignored(led, []), ["devel/llvm20@lite", "net/b"])
+        self.assertEqual(led["ports"]["net/a"]["state"], "ignored")
+
     def test_release_ignored_keeps_the_blacklist_itself(self):
         led = self.ledger()
         ledger.merge_result(led, {"ignored": ["devel/llvm20@lite", "net/a", "net/b"]}, NOW)

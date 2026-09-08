@@ -139,10 +139,13 @@ def merge_result(led, result, now, listed=None):
     # entry takes the state; a built, oversize or failed one keeps what
     # it earned (round 16 turned grpc from oversize into ignored, and
     # the next plan then no longer parked it).
+    reasons = result.get("ignore_reasons", {})
     for origin in result.get("ignored", []):
         entry = _entry(ports, key(origin))
         if entry["state"] in (STATE_PENDING, STATE_BLOCKED):
             entry["state"] = STATE_IGNORED
+            if origin in reasons:
+                entry["ignore_reason"] = reasons[origin]
     for origin in result.get("oversize", {}):
         _entry(ports, key(origin))["state"] = STATE_OVERSIZE
     # A build the job's deadline cut short. Once may be bad luck (the
@@ -188,16 +191,33 @@ def unblock(led):
     return sorted(changed)
 
 
+# What vm_build.sh writes as the IGNORE reason for blacklisted and
+# parked ports; any other reason came from the ports framework itself.
+OUR_IGNORE_MARKERS = ("too large for the CI runner", "parked by the ledger")
+
+
+def ours(reason):
+    return any(marker in reason for marker in OUR_IGNORE_MARKERS)
+
+
 def release_ignored(led, blacklist):
     """Before result.py reported skips separately, a port skipped because
     a blacklisted giant was in its chain was recorded as ignored itself.
     Give every ignored entry that is not on the blacklist back to
     pending; the next dry run re-derives the skip and merge_result files
-    it as blocked with its blocker named. Returns keys."""
+    it as blocked with its blocker named. An entry whose recorded reason
+    is the ports framework's own ("does not build on riscv64", "is
+    marked as broken") stays: releasing it only made every round
+    re-ignore it and flip its dependents between blocked and pending
+    (round 25 planned 86 released, 1,369 unblocked, for nothing).
+    Returns keys."""
     bare = set(o.split("@", 1)[0] for o in blacklist)
     changed = []
     for key, entry in led["ports"].items():
         if entry.get("state") != STATE_IGNORED or key.split("@", 1)[0] in bare:
+            continue
+        reason = entry.get("ignore_reason")
+        if reason is not None and not ours(reason):
             continue
         # an entry that had earned failed/oversize before a round's
         # IGNORE relabelled it goes back to that, not to pending

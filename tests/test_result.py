@@ -43,6 +43,7 @@ class ManifestTest(unittest.TestCase):
         # skipped ports name their blocker by origin when this job's
         # ignored/failed columns know the package, else by package name
         self.assertEqual(m["ignored"], ["devel/llvm20"])
+        self.assertEqual(m["ignore_reasons"], {"devel/llvm20": "too large"})
         self.assertEqual(m["skipped"], {"graphics/mesa-libs": "devel/llvm20",
                                         "x/y": "databases/sqlite3"})
 
@@ -68,7 +69,8 @@ class ManifestTest(unittest.TestCase):
     def test_empty_logdir_gives_an_empty_manifest(self):
         m = result.manifest(self.logdir)
         self.assertEqual(m, {"built": {}, "failed": [], "ignored": [],
-                             "oversize": {}, "interrupted": [], "skipped": {}})
+                             "oversize": {}, "interrupted": [], "skipped": {},
+                             "ignore_reasons": {}})
 
 
 if __name__ == "__main__":
