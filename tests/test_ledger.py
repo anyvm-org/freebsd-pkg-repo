@@ -372,6 +372,16 @@ class BlockedTest(unittest.TestCase):
         self.assertEqual(ledger.release_ignored(led, []), ["devel/llvm20@lite", "net/b"])
         self.assertEqual(led["ports"]["net/a"]["state"], "ignored")
 
+    def test_flavor_of_a_parked_port_stays_ignored_while_it_is_parked(self):
+        led = self.ledger()
+        led["ports"]["devel/grpc@py312"] = dict(led["ports"]["net/b"])
+        ledger.merge_result(led, {"ignored": ["devel/grpc@py312"],
+                                  "ignore_reasons": {"devel/grpc@py312":
+                                      "parked by the ledger: oversize or failed on the CI runner"}}, NOW)
+        self.assertEqual(ledger.release_ignored(led, []), [])
+        ledger.merge_result(led, {"built": {"devel/grpc": "grpc-1.pkg"}}, NOW)
+        self.assertEqual(ledger.release_ignored(led, []), ["devel/grpc@py312"])
+
     def test_release_ignored_keeps_the_blacklist_itself(self):
         led = self.ledger()
         ledger.merge_result(led, {"ignored": ["devel/llvm20@lite", "net/a", "net/b"]}, NOW)

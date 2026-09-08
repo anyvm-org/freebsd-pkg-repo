@@ -212,12 +212,19 @@ def release_ignored(led, blacklist):
     (round 25 planned 86 released, 1,369 unblocked, for nothing).
     Returns keys."""
     bare = set(o.split("@", 1)[0] for o in blacklist)
+    # the runner's IGNORE for a parked port covers every flavor of it;
+    # a flavor that is not itself oversize/failed would otherwise come
+    # back each plan and be ignored again each merge (48 such entries
+    # churned in round 27's plan)
+    parked = set(parked_origins(led))
     changed = []
     for key, entry in led["ports"].items():
         if entry.get("state") != STATE_IGNORED or key.split("@", 1)[0] in bare:
             continue
         reason = entry.get("ignore_reason")
         if reason is not None and not ours(reason):
+            continue
+        if reason is not None and "parked by the ledger" in reason                 and key.split("@", 1)[0] in parked:
             continue
         # an entry that had earned failed/oversize before a round's
         # IGNORE relabelled it goes back to that, not to pending
