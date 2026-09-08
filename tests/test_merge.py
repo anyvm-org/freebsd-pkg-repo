@@ -50,6 +50,7 @@ class MergeTest(unittest.TestCase):
         self.assertEqual(merged, {"built": {}, "failed": [], "ignored": [],
                                   "oversize": {}, "interrupted": [], "skipped": {},
                                   "ignore_reasons": {}})
+        self.assertEqual(supplier, {})
 
     def test_ignore_reasons_follow_the_ignored_set(self):
         merged, _ = merge.merge_results([
@@ -57,7 +58,6 @@ class MergeTest(unittest.TestCase):
             ("j2", {"built": {"c/d": "d-1.pkg"}}),
         ])
         self.assertEqual(merged["ignore_reasons"], {"a/b": "too large"})
-        self.assertEqual(supplier, {})
 
     def test_interrupted_yields_to_built_or_oversize_elsewhere(self):
         merged, _ = merge.merge_results([
