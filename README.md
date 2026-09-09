@@ -278,6 +278,14 @@ through the same pipeline:
 
 The next plan then releases every port that was blocked on them.
 
+**Dispatch an import into a free slot.** The Build concurrency group is
+`cancel-in-progress: false`, and GitHub keeps only ONE pending run per
+group: a newly queued run cancels the one already waiting. So an import
+queued behind a running round is cancelled the moment that round's merge
+dispatches the next one (the first gcc14 import died exactly that way,
+run 34316689822). Wait for the chain to be idle, or cancel the running
+round first, then dispatch.
+
 ### Rebuilding a published package
 
 A package can be wrong without ever failing: round 10 found that
