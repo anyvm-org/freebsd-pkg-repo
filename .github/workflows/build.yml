@@ -572,6 +572,41 @@ jobs:
             --abi-slug "${{ inputs.abi_slug }}" \
             publish --upload-json out/upload.json --out out --pubkey work/repo.pub
 
+      # A machine with no pkg at all cannot use pkg's own bootstrap: it
+      # insists on a Latest/pkg.pkg path that a flat release cannot serve
+      # (FreeBSD 15.0's riscv64 VM image ships only the stub, and
+      # pkg.FreeBSD.org has nothing for riscv64). Keep the current pkg
+      # package on the index release under a stable name so anyone can
+      # fetch it, extract pkg-static and add it.
+      - name: Refresh the pkg bootstrap asset
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN || github.token }}
+        run: |
+          set -eu
+          row=$(python3 - <<'PY'
+          import json
+          led = json.load(open("out/ledger.json"))
+          e = led["ports"].get("ports-mgmt/pkg") or {}
+          if e.get("state") == "built" and e.get("pkgfile") and e.get("shard") is not None:
+              print("%s %s" % (e["shard"], e["pkgfile"]))
+          PY
+          )
+          if [ -z "$row" ]; then
+            echo "ports-mgmt/pkg is not built yet; leaving the bootstrap asset alone"
+            exit 0
+          fi
+          shard=$(echo "$row" | awk '{print $1}')
+          name=$(echo "$row" | awk '{print $2}')
+          tag=$(printf 'pkg-%s-%03d' '${{ inputs.abi_slug }}' "$shard")
+          mkdir -p work/pkgboot
+          gh release download "$tag" --repo '${{ github.repository }}' \
+            -p "$name" -D work/pkgboot --clobber
+          cp "work/pkgboot/$name" work/pkgboot/pkg.pkg
+          gh release upload 'idx-${{ inputs.abi_slug }}' work/pkgboot/pkg.pkg \
+            --repo '${{ github.repository }}' --clobber
+          echo "bootstrap asset refreshed from $tag/$name"
+
       - uses: actions/upload-artifact@v7
         if: always()
         with:

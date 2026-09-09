@@ -65,11 +65,19 @@ are in the repository.
 
 The `pkg` the anyvm riscv64 image ships (2.6.2 on 15.1) verifies the
 ECDSA signature as-is, then upgrades itself to the `pkg` in the shard
-before installing anything else. A machine with no `pkg` at all cannot
-use the `pkg` bootstrapper, which insists on a `Latest/pkg.pkg` path that
-a flat release cannot serve; instead fetch `pkg-<version>.pkg` from the
-shard release by name, extract `pkg-static` from it, and run
-`pkg-static add` on it.
+before installing anything else.
+
+A machine with no `pkg` at all -- FreeBSD 15.0's riscv64 VM image ships
+only the bootstrapper stub -- cannot use that bootstrapper, which insists
+on a `Latest/pkg.pkg` path a flat release cannot serve. The index release
+carries the current `pkg` package under a stable name for this case:
+
+```
+fetch -o /tmp/pkg.pkg \
+  https://github.com/anyvm-org/freebsd-pkg-repo/releases/download/idx-FreeBSD-15-riscv64/pkg.pkg
+mkdir -p /tmp/pkgboot && tar -x -f /tmp/pkg.pkg -C /tmp/pkgboot /usr/local/sbin/pkg-static
+/tmp/pkgboot/usr/local/sbin/pkg-static add /tmp/pkg.pkg
+```
 
 ## Measured
 
