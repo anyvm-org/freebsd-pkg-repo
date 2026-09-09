@@ -32,6 +32,10 @@ on:
         description: 'Run id whose build artifacts to merge and publish instead of building (recover a round whose merge failed after a fix)'
         required: false
         default: ''
+      import_tag:
+        description: 'Release tag holding packages built elsewhere (result.json + *.pkg as assets) to publish instead of building'
+        required: false
+        default: ''
 
 # One round per ABI at a time. The merge job rewrites the ledger and the
 # open shard's index from the ledger the round fetched at ITS start, so
@@ -61,7 +65,7 @@ jobs:
   # into it, and hashes everything still pending into K slice files.
   # ---------------------------------------------------------------------
   plan:
-    if: inputs.merge_run == ''
+    if: inputs.merge_run == '' && inputs.import_tag == ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -374,7 +378,7 @@ jobs:
     # not always(): that runs the merge after a CANCELLED round too, and
     # round 17 (cancelled ten minutes in) then published a no-op merge
     # and dispatched the next round on top of the one being started.
-    if: ${{ !cancelled() && (inputs.merge_run != '' || (needs.plan.result == 'success' && needs.plan.outputs.indices != '[]')) }}
+    if: ${{ !cancelled() && (inputs.merge_run != '' || inputs.import_tag != '' || (needs.plan.result == 'success' && needs.plan.outputs.indices != '[]')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -391,11 +395,28 @@ jobs:
 
       # With merge_run set, the artifacts come from that earlier run.
       - uses: actions/download-artifact@v8
+        if: inputs.import_tag == ''
         with:
           pattern: build-${{ inputs.abi_slug }}-*
           path: work/jobs
           run-id: ${{ inputs.merge_run || github.run_id }}
           github-token: ${{ secrets.PUBLISH_TOKEN || github.token }}
+
+      # A build elsewhere (the giants do not fit a runner: lang/gcc14 and
+      # devel/llvm19 block 1,832 ports between them) publishes through the
+      # same path. The staging release carries the packages as assets plus
+      # the result.json scripts/result.py wrote next to them.
+      - name: Take the packages from the staging release
+        if: inputs.import_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.PUBLISH_TOKEN || github.token }}
+        run: |
+          set -eu
+          mkdir -p work/jobs/import/pkgs
+          gh release download '${{ inputs.import_tag }}' --repo '${{ github.repository }}' \
+            --dir work/jobs/import/pkgs --clobber
+          mv work/jobs/import/pkgs/result.json work/jobs/import/result.json
+          echo "imported $(ls work/jobs/import/pkgs | wc -l) package files from ${{ inputs.import_tag }}"
 
       - name: Merge the job results
         run: |

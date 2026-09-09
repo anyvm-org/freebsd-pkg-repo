@@ -241,6 +241,23 @@ Progress is the ledger on the index release:
 gh release download idx-FreeBSD-15-riscv64 --repo anyvm-org/freebsd-pkg-repo -p ledger.json
 ```
 
+### Importing packages built elsewhere
+
+The toolchain giants (`lang/gcc14`, `devel/llvm19`, `lang/rust`,
+`print/texlive-base`, ...) cannot finish inside a runner job under
+emulation, and between them they block a few thousand ports. Build them
+on a big machine with the same jail and ports tree, then publish them
+through the same pipeline:
+
+1. put the packages and the `result.json` that `scripts/result.py` wrote
+   into one release, e.g. `staging-local-gcc14`, as plain assets;
+2. dispatch a Build run with `-f import_tag=staging-local-gcc14` and no
+   other work: plan and build are skipped, and the merge job folds the
+   packages into the ledger, signs the shards they land in and refreshes
+   the index exactly as it does for a round.
+
+The next plan then releases every port that was blocked on them.
+
 ### Rebuilding a published package
 
 A package can be wrong without ever failing: round 10 found that
