@@ -44,12 +44,24 @@ pkg install tree
 
 The `sha256` line must print the fingerprint in the next section.
 `anyvm.conf` carries one repository block per shard release; fetch it
-again when a new shard appears. The stock `FreeBSD` repository has no
-riscv64 packages at all, so silencing it avoids noise:
+again when a new shard appears. pkg.FreeBSD.org has no riscv64 packages
+at all, and on 15.x its repositories are not one named `FreeBSD` but the
+pkgbase set, whose `FreeBSD-ports` entry is enabled by default: leaving
+it on makes every `pkg update` end in "Error updating repositories!" and
+`pkg rquery` return nothing. Silence all three:
 
 ```
-printf 'FreeBSD: { enabled: no }\n' > /usr/local/etc/pkg/repos/FreeBSD.conf
+cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'CONF'
+FreeBSD-ports: { enabled: no }
+FreeBSD-ports-kmods: { enabled: no }
+FreeBSD-base: { enabled: no }
+CONF
 ```
+
+Python's optional extension modules are separate ports on FreeBSD:
+`python312` alone has no `_sqlite3`, `tkinter` or `gdbm`. Install
+`py312-sqlite3`, `py312-tkinter` or `py312-gdbm` for those; all three
+are in the repository.
 
 The `pkg` the anyvm riscv64 image ships (2.6.2 on 15.1) verifies the
 ECDSA signature as-is, then upgrades itself to the `pkg` in the shard
