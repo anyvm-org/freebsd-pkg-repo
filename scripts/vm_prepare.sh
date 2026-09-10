@@ -121,7 +121,51 @@ ports_tree_exists "${PORTS_TREE}" || {
     echo "FATAL: ports tree ${PORTS_TREE} does not exist after creation" >&2
     exit 1
 }
-echo "ports tree at $(git -C "/usr/local/poudriere/ports/${PORTS_TREE}" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+# Check the tree out at the pinned commit. 'poudriere ports -c' clones
+# whatever HEAD is on the day the prepared image happens to be built, and
+# that day is decided by the image cache key -- so an unrelated release
+# elsewhere can move the tree under a repo whose 26k published packages
+# record exact dependency versions. config/ports-pin has the incident.
+#
+# poudriere's git method makes a shallow clone, so an older commit is not
+# in the object store: it has to be fetched by hash first.
+PORTSDIR="/usr/local/poudriere/ports/${PORTS_TREE}"
+if [ -n "${PORTS_PIN:-}" ]; then
+    if [ "$(git -C "${PORTSDIR}" rev-parse HEAD 2>/dev/null || echo none)" = "${PORTS_PIN}" ]; then
+        echo "ports tree already at the pin"
+    else
+        echo "pinning the ports tree to ${PORTS_PIN}"
+        pinned=no
+        attempt=0
+        while [ "${attempt}" -lt 3 ]; do
+            attempt=$((attempt + 1))
+            if git -C "${PORTSDIR}" fetch --depth=1 origin "${PORTS_PIN}"; then
+                git -C "${PORTSDIR}" checkout --force --detach FETCH_HEAD
+                pinned=yes
+                break
+            fi
+            echo "fetch by hash failed (attempt ${attempt})" >&2
+            sleep 15
+        done
+        if [ "${pinned}" = no ]; then
+            # Not every git server serves an arbitrary hash to a want-line.
+            # Deepening the shallow clone is slow and large, but it is the
+            # only fallback that still lands on the right commit.
+            echo "fetching by hash did not work; deepening the clone instead" >&2
+            git -C "${PORTSDIR}" fetch --unshallow || git -C "${PORTSDIR}" fetch --depth=100000
+            git -C "${PORTSDIR}" checkout --force --detach "${PORTS_PIN}"
+        fi
+    fi
+    # Never build against a tree other than the pinned one: that is exactly
+    # the silent failure this whole mechanism exists to prevent.
+    at=$(git -C "${PORTSDIR}" rev-parse HEAD 2>/dev/null || echo unknown)
+    if [ "${at}" != "${PORTS_PIN}" ]; then
+        echo "FATAL: ports tree is at ${at}, not the pinned ${PORTS_PIN}" >&2
+        exit 1
+    fi
+fi
+echo "ports tree at $(git -C "${PORTSDIR}" rev-parse HEAD 2>/dev/null || echo unknown)"
 
 df -h /
 echo "vm_prepare.sh done"

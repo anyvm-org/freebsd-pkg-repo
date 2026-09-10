@@ -1,0 +1,24 @@
+# The ports tree commit every build VM checks out.
+#
+# WHY THIS FILE EXISTS. poudriere validates a seeded package against the
+# EXACT versions its dependencies were recorded with. The published repo is
+# built incrementally over many rounds, so the moment the ports tree moves
+# under it, every already-published package that pins an older version of a
+# rebuilt dependency is discarded from the seed -- and the discard cascades
+# down the dependency graph.
+#
+# That is not theory. On 2026-09-09 the freebsd-builder v2.2.7 release
+# changed the prepared-image cache key (freebsd-15.1-2.2.6-... ->
+# freebsd-15.1-2.2.7-...), the image was re-prepared, and 'poudriere ports
+# -c' cloned the tree afresh at 8d8fa3ed instead of the 742e58ff every one
+# of the 26,893 published packages had been built against. expat went
+# 2.8.3 -> 2.8.4 in that window, which deleted python312-3.12.14 from the
+# seed, which deleted 96 more packages including llvm19, which re-blocked
+# 1,744 ports. One round of 18 jobs x 5 hours netted 3 packages.
+#
+# So the tree is pinned here, the pin is part of the prepare text (and thus
+# of the image cache key), and vm_prepare.sh fails the job rather than
+# build against a different tree. Moving the pin is a deliberate act that
+# costs a rebuild wave -- do it when the tree is otherwise complete, not
+# as a side effect of a release somewhere else.
+742e58ff7fec5f23d772b47fa0712a510cfcbc5d

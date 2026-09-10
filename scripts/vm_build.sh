@@ -258,6 +258,14 @@ else
     echo "WARNING: could not read the ports tree commit" >&2
 fi
 
+# A restored image whose tree is not the pinned one would build packages
+# that silently disagree with the 26k already published (config/ports-pin
+# records what that cost). Refuse the job instead.
+if [ -n "${PORTS_PIN:-}" ] && [ "$(cat "${OUTDIR}/ports_commit")" != "${PORTS_PIN}" ]; then
+    echo "FATAL: ports tree is at $(cat "${OUTDIR}/ports_commit"), not the pinned ${PORTS_PIN}" >&2
+    exit 1
+fi
+
 # ---------------------------------------------------------------------
 # Build the slice under a wall-clock budget. poudriere has no native time
 # budget, so it runs in the background with a watchdog. poudriere is

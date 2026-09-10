@@ -74,6 +74,7 @@ jobs:
       arch: ${{ steps.abi.outputs.arch }}
       jail: ${{ steps.abi.outputs.jail }}
       abi: ${{ steps.abi.outputs.abi }}
+      ports_pin: ${{ steps.abi.outputs.ports_pin }}
     steps:
       - uses: actions/checkout@v7
 
@@ -93,6 +94,16 @@ jobs:
           major=$(echo "$row" | awk '{print $2}' | cut -d. -f1)
           echo "abi=FreeBSD:${major}:$(echo "$row" | awk '{print $3}' | cut -d. -f2)" >> "$GITHUB_OUTPUT"
           echo "resolved: $row"
+          # The ports tree every build VM must check out. A floating tree
+          # silently poisons the published repo -- config/ports-pin has the
+          # incident that made this necessary.
+          pin=$(grep -v '^#' config/ports-pin | tr -d '[:space:]')
+          case "$pin" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) echo "config/ports-pin does not hold a commit hash: '$pin'" >&2; exit 1 ;;
+          esac
+          echo "ports_pin=$pin" >> "$GITHUB_OUTPUT"
+          echo "ports pin: $pin"
 
       - name: Fetch the ledger, queue the origins, cut the slices
         id: slices
@@ -241,7 +252,11 @@ jobs:
 
       - name: Build the slice in a FreeBSD VM
         id: vm
-        uses: vmactions/freebsd-vm@v1
+        # Pinned, not @v1. The rolling tag carries a BUILDER_VERSION, which
+        # is part of the prepared-image cache key: releasing freebsd-vm
+        # v1.5.6 (builder 2.2.6 -> 2.2.7) re-prepared the image and moved
+        # the ports tree under the published repo. See config/ports-pin.
+        uses: vmactions/freebsd-vm@v1.5.6
         env:
           ABI_SLUG: ${{ inputs.abi_slug }}
           TARGET_ABI: ${{ needs.plan.outputs.abi }}
@@ -261,6 +276,7 @@ jobs:
           LEDGER: ${{ github.workspace }}/work/ledger.json
           BLACKLIST: ${{ github.workspace }}/config/blacklist
           BLOCKED: ${{ github.workspace }}/work/blocked.txt
+          PORTS_PIN: ${{ needs.plan.outputs.ports_pin }}
         with:
           # Major-version prefix: freebsd-vm resolves it to the newest
           # matching release ("Only the leading, '.' separated part of it is
@@ -281,9 +297,12 @@ jobs:
           # values below are spelled out literally: with them only in envs,
           # every ABI would share one prepared image.
           cache-after-prepare: true
-          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL SLICE_INDEX BUILD_DEADLINE REPO PKGDATA LEDGER BLACKLIST BLOCKED'
+          envs: 'ABI_SLUG TARGET_ABI FBSD_VERSION POUDRIERE_ARCH POUDRIERE_JAIL SLICE_INDEX BUILD_DEADLINE REPO PKGDATA LEDGER BLACKLIST BLOCKED PORTS_PIN'
           prepare: |
             # cache key material -- abi=${{ inputs.abi_slug }} version=${{ needs.plan.outputs.version }} arch=${{ needs.plan.outputs.arch }} jail=${{ needs.plan.outputs.jail }}
+            # ports pin ${{ needs.plan.outputs.ports_pin }} is deliberately part of this
+            # text: the tree is frozen in the cached image, so a pin change
+            # must invalidate that image rather than leave a stale tree.
             # prepare-epoch: 1  (bump to force a fresh jail and ports tree)
             set -eu
             mkdir -p /root/prep
@@ -291,6 +310,7 @@ jobs:
             export FBSD_VERSION='${{ needs.plan.outputs.version }}'
             export POUDRIERE_ARCH='${{ needs.plan.outputs.arch }}'
             export POUDRIERE_JAIL='${{ needs.plan.outputs.jail }}'
+            export PORTS_PIN='${{ needs.plan.outputs.ports_pin }}'
             sh /root/prep/scripts/vm_prepare.sh
           run: |
             set -eu
@@ -500,7 +520,8 @@ jobs:
           PY
 
       - name: Stage and sign the shards in a FreeBSD VM
-        uses: vmactions/freebsd-vm@v1
+        # Pinned for the same reason as the build job above.
+        uses: vmactions/freebsd-vm@v1.5.6
         env:
           ABI_SLUG: ${{ inputs.abi_slug }}
           TARGET_ABI: ${{ steps.abi.outputs.abi }}
