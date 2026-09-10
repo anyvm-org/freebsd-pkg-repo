@@ -224,17 +224,46 @@ if [ -n "${PKGDATA:-}" ] && [ -n "${LEDGER:-}" ] && [ -f "${LEDGER}" ] && [ -n "
         fi
         SEEDALL="${SEEDROOT}/.latest/All"
         mkdir -p "${SEEDALL}"
-        # Eight fetches at a time; a failed fetch just leaves the port to
-        # be rebuilt, so per-file errors are not fatal.
+        # Eight fetches at a time. A dropped file is NOT a local matter:
+        # poudriere prunes every seeded package whose dependencies are not
+        # all present, so one missing core library takes dozens of good
+        # packages with it and turns them into a rebuild. Retry, and say
+        # out loud what is still missing afterwards.
+        seed_fetch() {
+            _url=$1
+            _dst=$2
+            _try=0
+            while [ "${_try}" -lt 3 ]; do
+                _try=$((_try + 1))
+                if fetch -q -o "${_dst}.part" "${_url}" 2>/dev/null \
+                        && [ -s "${_dst}.part" ]; then
+                    mv -f "${_dst}.part" "${_dst}"
+                    return 0
+                fi
+                rm -f "${_dst}.part"
+                sleep 2
+            done
+            return 1
+        }
         n=0
         while IFS="$(printf '\t')" read -r url name; do
             [ -n "${url}" ] || continue
             [ -s "${SEEDALL}/${name}" ] && continue
-            fetch -q -o "${SEEDALL}/${name}" "${url}" 2>/dev/null || rm -f "${SEEDALL}/${name}" &
+            seed_fetch "${url}" "${SEEDALL}/${name}" &
             n=$((n + 1))
             [ $((n % 8)) -eq 0 ] && wait
         done < "${OUTDIR}/wantlist.txt"
         wait
+        MISSING=0
+        while IFS="$(printf '\t')" read -r url name; do
+            [ -n "${name}" ] || continue
+            [ -s "${SEEDALL}/${name}" ] && continue
+            MISSING=$((MISSING + 1))
+            [ "${MISSING}" -le 20 ] && echo "seed MISSING: ${name} <- ${url}" >&2
+        done < "${OUTDIR}/wantlist.txt"
+        if [ "${MISSING}" -gt 0 ]; then
+            echo "WARNING: ${MISSING} of $(wc -l < "${OUTDIR}/wantlist.txt" | tr -d ' ') seed packages could not be fetched; expect skips downstream of them" >&2
+        fi
         PKGFILE=$(ls "${SEEDALL}" 2>/dev/null | grep -E '^pkg-[0-9].*\.pkg$' | head -1)
         if [ -n "${PKGFILE}" ]; then
             mkdir -p "${SEEDROOT}/.latest/Latest"
